@@ -2,7 +2,7 @@ from app.models.attendance import AttendanceAuditLog, AttendanceCorrection, Atte
 from app.models.auth import Permission, Role, RoleModuleAccess, RolePermission, User, UserPermission, UserSession
 from app.models.employee import Department, Designation, Employee, ReportingManager
 from app.models.leave import LeaveApproval, LeaveBalance, LeaveRequest, LeaveType
-from app.models.payroll import PayrollRun, PayrollTransaction, Payslip, SalaryStructure
+from app.models.payroll import PayrollRun, PayrollTransaction, Payslip, SalaryProfile, SalaryStructure
 from app.models.tracker import Device, TrackerHeartbeat, TrackerIdleLog, TrackerSession
 from app.models.utility import AppSetting, AuditLog, CalendarEvent, EmployeeSubmittedReport, Holiday, Notification
 
@@ -35,6 +35,7 @@ __all__ = [
     "RoleModuleAccess",
     "RolePermission",
     "SalaryStructure",
+    "SalaryProfile",
     "TrackerHeartbeat",
     "TrackerIdleLog",
     "TrackerSession",

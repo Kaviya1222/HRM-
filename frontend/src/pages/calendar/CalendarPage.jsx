@@ -4,7 +4,8 @@ import { createCalendarEvent, deleteCalendarEvent, fetchCalendarEvents, updateCa
 import useAuth from "../../hooks/useAuth";
 
 const CALENDAR_EVENT_STORAGE_KEY = "hrm:calendar-events:v1";
-const WEEKDAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const CALENDAR_UPDATED_EVENT = "hrm:calendar-updated";
+const CALENDAR_UPDATED_AT_KEY = "hrm:calendar-updated-at";
 const EVENT_TYPE_OPTIONS = [
   { value: "meeting", label: "Meeting" },
   { value: "huddle", label: "Huddle" },
@@ -140,6 +141,16 @@ function loadStoredCalendarEvents() {
   }
 }
 
+function notifyCalendarUpdated() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const updatedAt = String(Date.now());
+  window.localStorage.setItem(CALENDAR_UPDATED_AT_KEY, updatedAt);
+  window.dispatchEvent(new CustomEvent(CALENDAR_UPDATED_EVENT, { detail: { updatedAt } }));
+}
+
 function formatEventTime(value) {
   if (!value || !isValidEventTime(value)) {
     return "";
@@ -200,44 +211,21 @@ function moveDateByMonths(value, months) {
 function getWeeksForMonth(monthDate) {
   const monthStart = getMonthStart(monthDate);
   const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
-  const weeks = [];
-  const firstWeekday = monthStart.getDay();
+  const days = [];
   const totalDaysInMonth = monthEnd.getDate();
-  const totalCellCount = Math.ceil((firstWeekday + totalDaysInMonth) / 7) * 7;
 
-  for (let cellIndex = 0; cellIndex < totalCellCount; cellIndex += 7) {
-    const week = [];
-
-    for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
-      const monthDayNumber = cellIndex + dayIndex - firstWeekday + 1;
-
-      if (monthDayNumber < 1 || monthDayNumber > totalDaysInMonth) {
-        week.push({
-          key: `placeholder-${cellIndex + dayIndex}`,
-          isoDate: "",
-          dayLabel: "",
-          monthLabel: "",
-          isCurrentMonth: false,
-          isPlaceholder: true,
-        });
-        continue;
-      }
-
-      const day = new Date(monthDate.getFullYear(), monthDate.getMonth(), monthDayNumber);
-      week.push({
-        key: formatLocalDate(day),
-        isoDate: formatLocalDate(day),
-        dayLabel: String(day.getDate()).padStart(2, "0"),
-        monthLabel: day.toLocaleDateString("en-IN", { month: "short" }).toUpperCase(),
-        isCurrentMonth: true,
-        isPlaceholder: false,
-      });
-    }
-
-    weeks.push(week);
+  for (let monthDayNumber = 1; monthDayNumber <= totalDaysInMonth; monthDayNumber += 1) {
+    const day = new Date(monthDate.getFullYear(), monthDate.getMonth(), monthDayNumber);
+    days.push({
+      key: formatLocalDate(day),
+      isoDate: formatLocalDate(day),
+      dayLabel: String(day.getDate()).padStart(2, "0"),
+      monthLabel: day.toLocaleDateString("en-IN", { month: "short" }).toUpperCase(),
+      weekdayLabel: day.toLocaleDateString("en-IN", { weekday: "short" }).toUpperCase(),
+    });
   }
 
-  return weeks;
+  return days;
 }
 
 function CalendarPage() {
@@ -252,7 +240,7 @@ function CalendarPage() {
   const [scheduleFeedback, setScheduleFeedback] = useState({ type: "", message: "" });
   const [isEventSaving, setIsEventSaving] = useState(false);
   const monthPickerRef = useRef(null);
-  const canManageCalendarEvents = hasPermission("notifications.manage");
+  const canManageCalendarEvents = hasPermission("calendar.events.manage");
   const monthCursor = useMemo(() => getMonthStart(selectedDate), [selectedDate]);
   const selectedDateKey = useMemo(() => formatLocalDate(selectedDate), [selectedDate]);
   const todayKey = useMemo(() => formatLocalDate(new Date()), []);
@@ -269,8 +257,7 @@ function CalendarPage() {
     [selectedDate],
   );
 
-  const weeks = useMemo(() => getWeeksForMonth(monthCursor), [monthCursor]);
-  const calendarDays = useMemo(() => weeks.flat(), [weeks]);
+  const calendarDays = useMemo(() => getWeeksForMonth(monthCursor), [monthCursor]);
   const eventsByDate = useMemo(() => {
     const groupedEvents = {};
 
@@ -367,6 +354,12 @@ function CalendarPage() {
     };
   }, [isScheduleOpen, selectedDateKey]);
 
+  useEffect(() => {
+    if (!canManageCalendarEvents && isScheduleOpen) {
+      closeScheduleModal();
+    }
+  }, [canManageCalendarEvents, isScheduleOpen]);
+
   function moveMonth(direction) {
     setSelectedDate((current) => moveDateByMonths(current, direction));
   }
@@ -426,6 +419,10 @@ function CalendarPage() {
       setSelectedDate(parsedDate);
     }
 
+    if (!canManageCalendarEvents) {
+      return;
+    }
+
     setEventForm(createEmptyEventForm(targetDateKey));
     setEditingEventId(null);
     setScheduleFeedback({ type: "", message: "" });
@@ -480,7 +477,7 @@ function CalendarPage() {
   async function handleEventSubmit(event) {
     event.preventDefault();
     if (!canManageCalendarEvents) {
-      setScheduleFeedback({ type: "error", message: "Only Admin can create or update calendar events." });
+      setScheduleFeedback({ type: "error", message: "You do not have permission to create or update calendar schedules." });
       return;
     }
 
@@ -524,8 +521,9 @@ function CalendarPage() {
       setEventForm(createEmptyEventForm(formatLocalDate(parsedDate)));
       setScheduleFeedback({
         type: "success",
-        message: editingEventId ? "Schedule updated successfully." : "Schedule added successfully. Employee notifications were created for Huddle and Meeting events.",
+        message: response.message || (editingEventId ? "Schedule updated successfully." : "Schedule added successfully."),
       });
+      notifyCalendarUpdated();
     } catch (saveError) {
       setScheduleFeedback({
         type: "error",
@@ -537,6 +535,10 @@ function CalendarPage() {
   }
 
   function handleEditEvent(calendarEvent) {
+    if (!canManageCalendarEvents) {
+      return;
+    }
+
     setEditingEventId(calendarEvent.id);
     setEventForm({
       title: calendarEvent.title,
@@ -555,7 +557,7 @@ function CalendarPage() {
 
   async function handleDeleteEvent(eventId) {
     if (!canManageCalendarEvents) {
-      setScheduleFeedback({ type: "error", message: "Only Admin can delete calendar events." });
+      setScheduleFeedback({ type: "error", message: "You do not have permission to delete calendar schedules." });
       return;
     }
 
@@ -569,6 +571,7 @@ function CalendarPage() {
       }
 
       setScheduleFeedback({ type: "success", message: "Schedule deleted successfully." });
+      notifyCalendarUpdated();
     } catch (deleteError) {
       setScheduleFeedback({
         type: "error",
@@ -654,24 +657,8 @@ function CalendarPage() {
         </div>
 
         <div className="calendar-board">
-          <div className="calendar-weekday-row">
-            {WEEKDAY_LABELS.map((label) => (
-              <span className="calendar-weekday-pill" key={label}>{label}</span>
-            ))}
-          </div>
-
           <div className="calendar-grid">
             {calendarDays.map((day) => {
-              if (day.isPlaceholder) {
-                return (
-                  <article
-                    aria-hidden="true"
-                    className="calendar-day-card is-adjacent"
-                    key={day.key}
-                  />
-                );
-              }
-
               const isSelectedDate = day.isoDate === selectedDateKey;
               const isToday = day.isoDate === todayKey;
               const dayEvents = eventsByDate[day.isoDate] || [];
@@ -696,7 +683,7 @@ function CalendarPage() {
                   tabIndex={0}
                 >
                   <div className="calendar-day-card-head">
-                    <span className="calendar-day-month-label">{day.monthLabel}</span>
+                    <span className="calendar-day-month-label">{day.weekdayLabel} · {day.monthLabel}</span>
                     <div className="calendar-day-head-badges">
                       {dayEvents.length ? <span className="calendar-day-chip calendar-day-chip--count">{dayEvents.length}</span> : null}
                       {isToday ? <span className="calendar-day-chip">Today</span> : null}
@@ -730,9 +717,40 @@ function CalendarPage() {
             })}
           </div>
         </div>
+
+        <div className="calendar-readonly-panel">
+          <div className="calendar-schedule-list-header">
+            <p className="sidebar-section-label">Saved Events</p>
+            <h3 className="module-panel-title">{formatSelectedDateLabel(selectedDate)}</h3>
+          </div>
+
+          {selectedDateEvents.length ? (
+            <div className="calendar-schedule-list">
+              {selectedDateEvents.map((calendarEvent) => (
+                <article className="calendar-schedule-card" key={calendarEvent.id}>
+                  <div className="calendar-schedule-card-head">
+                    <div className="calendar-schedule-card-title-group">
+                      <strong>{calendarEvent.title}</strong>
+                      <span className={`calendar-event-type-badge is-${calendarEvent.type}`}>
+                        {EVENT_TYPE_OPTIONS.find((option) => option.value === calendarEvent.type)?.label || "General Event"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {calendarEvent.time ? <p className="calendar-schedule-card-time">{formatEventTime(calendarEvent.time)}</p> : null}
+                  {calendarEvent.description ? <p className="calendar-schedule-card-description">{calendarEvent.description}</p> : null}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="employee-empty-state calendar-schedule-empty-state">
+              <span>No schedules saved for this date yet.</span>
+            </div>
+          )}
+        </div>
       </section>
 
-      {isScheduleOpen ? (
+      {canManageCalendarEvents && isScheduleOpen ? (
         <div className="calendar-schedule-overlay" onClick={closeScheduleModal} role="presentation">
           <section className="employee-panel calendar-schedule-modal" onClick={(event) => event.stopPropagation()}>
             <div className="module-toolbar">
@@ -836,14 +854,13 @@ function CalendarPage() {
                               {EVENT_TYPE_OPTIONS.find((option) => option.value === calendarEvent.type)?.label || "General Event"}
                             </span>
                           </div>
-                          <div className="employee-row-actions">
-                            <button className="ghost-button employee-row-btn" onClick={() => handleEditEvent(calendarEvent)} type="button">
-                              Edit
-                            </button>
-                            <button className="ghost-button employee-row-btn" onClick={() => handleDeleteEvent(calendarEvent.id)} type="button">
-                              Delete
-                            </button>
-                          </div>
+                          {canManageCalendarEvents ? (
+                            <div className="employee-row-actions">
+                              <button className="ghost-button employee-row-btn" onClick={() => handleEditEvent(calendarEvent)} type="button">
+                                Edit
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
 
                         {calendarEvent.time ? <p className="calendar-schedule-card-time">{formatEventTime(calendarEvent.time)}</p> : null}

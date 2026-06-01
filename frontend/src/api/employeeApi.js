@@ -31,3 +31,8 @@ export async function updateEmployeeStatus(employeeId, isActive) {
   });
   return response.data;
 }
+
+export async function deleteEmployee(employeeId) {
+  const response = await apiClient.delete(`/employees/${employeeId}`);
+  return response.data;
+}

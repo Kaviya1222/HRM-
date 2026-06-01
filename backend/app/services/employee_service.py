@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import AuthContext
@@ -305,59 +306,73 @@ class EmployeeService:
         designation = EmployeeService._get_designation_or_none(db, payload.get("designation_id"))
         manager = EmployeeService._get_manager_or_none(db, payload.get("manager_id"))
 
-        user = User(
-            email=email,
-            password_hash=get_password_hash(str(payload["password"])),
-            first_name=str(payload["first_name"]).strip(),
-            last_name=str(payload["last_name"]).strip(),
-            role_id=role.id,
-            is_active=True,
-            status=UserStatus.ACTIVE.value,
-        )
-        db.add(user)
-        db.flush()
-
-        employee = Employee(
-            user_id=user.id,
-            employee_code=employee_code,
-            department_id=department.id if department else None,
-            designation_id=designation.id if designation else None,
-            manager_id=manager.id if manager else None,
-            joining_date=payload.get("joining_date"),
-            date_of_birth=payload.get("date_of_birth"),
-            phone_number=payload.get("phone_number"),
-            address=payload.get("address"),
-            base_salary=payload.get("base_salary"),
-            is_billable=bool(payload.get("is_billable", True)),
-            status=EmployeeStatus.ACTIVE.value,
-        )
-        db.add(employee)
-        db.flush()
-
-        if manager is not None:
-            EmployeeService._replace_reporting_manager(
-                db,
-                employee=employee,
-                manager=manager,
-                start_date=payload.get("joining_date") or date.today(),
+        try:
+            user = User(
+                email=email,
+                password_hash=get_password_hash(str(payload["password"])),
+                first_name=str(payload["first_name"]).strip(),
+                last_name=str(payload["last_name"]).strip(),
+                role_id=role.id,
+                is_active=True,
+                status=UserStatus.ACTIVE.value,
             )
+            db.add(user)
+            db.flush()
 
-        db.flush()
-        
-        # Initialize leave balances for the new employee
-        from app.services.leave_service import LeaveService
-        LeaveService.initialize_leave_balances_for_employee(db, str(employee.id))
-        
-        created_payload = EmployeeService.serialize_employee(EmployeeService._get_employee_or_404(db, employee.id))
-        EmployeeService._add_audit_log(
-            db,
-            actor_user_id=auth.user.id,
-            entity_type="employee",
-            entity_id=employee.id,
-            action="employee.create",
-            after_data=created_payload,
-        )
-        db.commit()
+            employee = Employee(
+                user_id=user.id,
+                employee_code=employee_code,
+                department_id=department.id if department else None,
+                designation_id=designation.id if designation else None,
+                manager_id=manager.id if manager else None,
+                joining_date=payload.get("joining_date"),
+                date_of_birth=payload.get("date_of_birth"),
+                phone_number=payload.get("phone_number"),
+                address=payload.get("address"),
+                base_salary=payload.get("base_salary"),
+                is_billable=bool(payload.get("is_billable", True)),
+                status=EmployeeStatus.ACTIVE.value,
+            )
+            db.add(employee)
+            db.flush()
+
+            if manager is not None:
+                EmployeeService._replace_reporting_manager(
+                    db,
+                    employee=employee,
+                    manager=manager,
+                    start_date=payload.get("joining_date") or date.today(),
+                )
+
+            db.flush()
+
+            # Initialize leave balances so the employee is available in Leave workflows immediately.
+            from app.services.leave_service import LeaveService
+            LeaveService.initialize_leave_balances_for_employee(db, str(employee.id))
+
+            created_payload = EmployeeService.serialize_employee(EmployeeService._get_employee_or_404(db, employee.id))
+            EmployeeService._add_audit_log(
+                db,
+                actor_user_id=auth.user.id,
+                entity_type="employee",
+                entity_id=employee.id,
+                action="employee.create",
+                after_data=created_payload,
+            )
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Employee could not be saved because one or more selected values are invalid or already used.",
+            ) from exc
+        except SQLAlchemyError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Employee could not be saved due to a database error.",
+            ) from exc
+
         return EmployeeService.get_employee_detail(db, employee.id)
 
     @staticmethod
@@ -458,6 +473,35 @@ class EmployeeService:
         )
         db.commit()
         return after_payload
+
+    @staticmethod
+    def delete_employee(db: Session, auth: AuthContext, employee_id: UUID | str) -> dict[str, object]:
+        employee = EmployeeService._get_employee_or_404(db, employee_id)
+        if employee.user is not None:
+            EmployeeService._ensure_actor_can_manage_target(auth, employee.user)
+            if employee.user_id == auth.user.id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own employee record")
+
+        before_payload = EmployeeService.serialize_employee(employee)
+        employee.is_deleted = True
+        employee.deleted_at = datetime.now(UTC)
+        employee.status = EmployeeStatus.INACTIVE.value
+        if employee.user is not None:
+            employee.user.is_active = False
+            employee.user.status = UserStatus.INACTIVE.value
+
+        db.flush()
+        EmployeeService._add_audit_log(
+            db,
+            actor_user_id=auth.user.id,
+            entity_type="employee",
+            entity_id=employee.id,
+            action="employee.delete",
+            before_data=before_payload,
+            after_data={"is_deleted": True},
+        )
+        db.commit()
+        return {"message": "Employee deleted successfully"}
 
     @staticmethod
     def assign_manager(

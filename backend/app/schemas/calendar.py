@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -11,4 +12,4 @@ class CalendarEventRequest(BaseModel):
     date: date
     time: str | None = None
     description: str | None = None
-
+    employee_id: UUID | None = None

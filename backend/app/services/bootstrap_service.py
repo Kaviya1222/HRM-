@@ -54,21 +54,30 @@ DEFAULT_APP_SETTINGS = [
         "is_public": True,
     },
     {
-        "key": "attendance.late_mark_after_minutes",
+        "key": "attendance.start_time",
         "category": "attendance",
-        "name": "Late Mark Threshold",
-        "description": "Minutes after shift start to mark a late entry.",
+        "name": "Start Time",
+        "description": "Check-in at or before this time is treated as on-time.",
         "value_type": "json",
-        "value_json": {"minutes": 15},
+        "value_json": {"hour": 9, "minute": 30},
         "is_public": False,
     },
     {
-        "key": "attendance.half_day_min_minutes",
+        "key": "attendance.late_entry_range",
         "category": "attendance",
-        "name": "Half Day Threshold",
-        "description": "Minimum worked minutes required to avoid half-day status.",
+        "name": "Late Entry",
+        "description": "Check-ins in this time range are marked as late entry.",
         "value_type": "json",
-        "value_json": {"minutes": 240},
+        "value_json": {"start_hour": 9, "start_minute": 45, "end_hour": 13, "end_minute": 0},
+        "is_public": False,
+    },
+    {
+        "key": "attendance.half_day_range",
+        "category": "attendance",
+        "name": "Half Day",
+        "description": "Check-ins in this time range are marked as half day.",
+        "value_type": "json",
+        "value_json": {"start_hour": 13, "start_minute": 1, "end_hour": 18, "end_minute": 30},
         "is_public": False,
     },
     {
@@ -87,15 +96,6 @@ DEFAULT_APP_SETTINGS = [
         "description": "Heartbeat sync interval for tracker clients.",
         "value_type": "json",
         "value_json": {"seconds": 60},
-        "is_public": False,
-    },
-    {
-        "key": "attendance.workday_start",
-        "category": "attendance",
-        "name": "Workday Start Time",
-        "description": "Nominal workday start time used for late mark calculation.",
-        "value_type": "json",
-        "value_json": {"hour": 9, "minute": 0},
         "is_public": False,
     },
     {
@@ -747,6 +747,7 @@ def _seed_demo_data(db: Session, *, roles_by_code: dict[str, Role], super_admin_
             gross_salary = Decimal(str(structure.basic_salary)) + _sum_components(structure.allowances)
             deduction_amount = _sum_components(structure.deductions)
             net_salary = gross_salary - deduction_amount
+            monthly_salary = Decimal(str(structure.basic_salary))
             attendance_summary = attendance_counters.get(employee_code, {
                 "present_days": 20,
                 "half_days": 0,
@@ -754,22 +755,34 @@ def _seed_demo_data(db: Session, *, roles_by_code: dict[str, Role], super_admin_
                 "absent_days": 0,
                 "working_days": 20,
             })
+            total_days = calendar.monthrange(payroll_run.period_year, payroll_run.period_month)[1]
+            worked_days = Decimal(
+                str(
+                    attendance_summary["present_days"]
+                    + (attendance_summary["half_days"] * 0.5)
+                )
+            )
+            payable_ratio = worked_days / Decimal(str(max(total_days, 1)))
+            calculated_net_salary = (monthly_salary * payable_ratio).quantize(Decimal("0.01"))
 
             db.add(
                 Payslip(
                     payroll_run_id=payroll_run.id,
                     employee_id=employees_by_code[employee_code].id,
-                    gross_salary=gross_salary,
-                    deduction_amount=deduction_amount,
-                    net_salary=net_salary,
-                    paid_days=Decimal(
-                        str(
-                            attendance_summary["present_days"]
-                            + attendance_summary["leave_days"]
-                            + (attendance_summary["half_days"] * 0.5)
-                        )
-                    ),
-                    attendance_summary=attendance_summary,
+                    monthly_salary=monthly_salary,
+                    total_days=total_days,
+                    worked_days=worked_days,
+                    per_day_salary=(monthly_salary / Decimal(str(max(total_days, 1)))).quantize(Decimal("0.01")),
+                    basic=(monthly_salary * Decimal("0.40") * payable_ratio).quantize(Decimal("0.01")),
+                    hra=(monthly_salary * Decimal("0.20") * payable_ratio).quantize(Decimal("0.01")),
+                    special_allowance=(monthly_salary * Decimal("0.25") * payable_ratio).quantize(Decimal("0.01")),
+                    transport=(monthly_salary * Decimal("0.10") * payable_ratio).quantize(Decimal("0.01")),
+                    medical=(monthly_salary * Decimal("0.05") * payable_ratio).quantize(Decimal("0.01")),
+                    gross_salary=calculated_net_salary,
+                    deduction_amount=Decimal("0.00"),
+                    net_salary=calculated_net_salary,
+                    paid_days=worked_days,
+                    attendance_summary={**attendance_summary, "total_days": total_days, "worked_days": float(worked_days)},
                 )
             )
 
@@ -1007,7 +1020,7 @@ def bootstrap_reference_data(db: Session) -> None:
             should_allow = permission_key in default_keys or role_code == RoleCode.SUPER_ADMIN.value
             existing_role_permission = existing_role_permissions.get(permission_id)
             if existing_role_permission is not None:
-                if should_allow and not existing_role_permission.is_allowed:
+                if role_code == RoleCode.SUPER_ADMIN.value and not existing_role_permission.is_allowed:
                     existing_role_permission.is_allowed = True
                 continue
             db.add(

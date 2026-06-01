@@ -50,7 +50,7 @@ def list_employees(
 @router.post("", response_model=EmployeeDetail, status_code=status.HTTP_201_CREATED)
 def create_employee(
     payload: EmployeeCreateRequest,
-    auth: AuthContext = Depends(require_permissions("employees.create", "users.create")),
+    auth: AuthContext = Depends(require_permissions("employees.create")),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return EmployeeService.create_employee(db, auth, payload.model_dump())
@@ -69,7 +69,7 @@ def get_employee(
 def update_employee(
     employee_id: UUID,
     payload: EmployeeUpdateRequest,
-    auth: AuthContext = Depends(require_permissions("employees.edit", "users.edit")),
+    auth: AuthContext = Depends(require_permissions("employees.edit")),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return EmployeeService.update_employee(db, auth, employee_id, payload.model_dump())
@@ -89,6 +89,20 @@ def update_employee_status(
             detail="You do not have permission to change user activation state",
         )
     return EmployeeService.update_employee_status(db, auth, employee_id=employee_id, is_active=payload.is_active)
+
+
+@router.delete("/{employee_id}")
+def delete_employee(
+    employee_id: UUID,
+    auth: AuthContext = Depends(require_permissions("employees.deactivate")),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    if not PermissionService.has_permissions(auth.access, ("users.deactivate",)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to deactivate linked user accounts",
+        )
+    return EmployeeService.delete_employee(db, auth, employee_id)
 
 
 @router.patch("/{employee_id}/manager", response_model=EmployeeDetail)

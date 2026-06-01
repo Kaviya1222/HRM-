@@ -19,6 +19,7 @@ class CalendarEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     event_time: Mapped[str | None] = mapped_column(String(10), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):

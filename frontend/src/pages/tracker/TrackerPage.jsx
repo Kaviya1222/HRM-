@@ -16,6 +16,23 @@ function formatStatus(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function getTrackerActivityTime(row) {
+  const value = row.last_heartbeat || row.login_time || row.logout_time;
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortTrackerRows(items = []) {
+  return [...items].sort((left, right) => {
+    const leftOnline = left.active_status === "online" ? 1 : 0;
+    const rightOnline = right.active_status === "online" ? 1 : 0;
+    if (leftOnline !== rightOnline) {
+      return rightOnline - leftOnline;
+    }
+    return getTrackerActivityTime(right) - getTrackerActivityTime(left);
+  });
+}
+
 function TrackerPage() {
   const [rows, setRows] = useState([]);
   const [feedback, setFeedback] = useState({ type: "", message: "" });
@@ -28,11 +45,11 @@ function TrackerPage() {
         .filter((row) => row.active_status === "online")
         .map((row) => row.employee_id || row.user_id || row.tracker_session_id),
     ).size;
-    const offline = rows.filter((row) => row.active_status === "offline").length;
+    const offline = Math.max(rows.length - online, 0);
     return [
-      { label: "Tracked Sessions", value: rows.length },
+      { label: "Total Employees", value: rows.length },
       { label: "Online Employees", value: online },
-      { label: "Offline Sessions", value: offline },
+      { label: "Offline Employees", value: offline },
     ];
   }, [rows]);
 
@@ -45,7 +62,7 @@ function TrackerPage() {
 
     try {
       const response = await fetchTrackerLiveStatus();
-      setRows(response.items);
+      setRows(sortTrackerRows(response.items || []));
       setFeedback({ type: "", message: "" });
     } catch (error) {
       setFeedback({

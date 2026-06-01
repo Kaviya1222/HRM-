@@ -24,7 +24,7 @@ const ATTENDANCE_UPDATED_AT_KEY = "hrm:attendance-updated-at";
 const MANUAL_ATTENDANCE_OPTIONS = [
   { value: "present", label: "Present" },
   { value: "absent", label: "Absent" },
-  { value: "late_come", label: "Late Come" },
+  { value: "late_come", label: "Late Entry" },
   { value: "half_day", label: "Half Day" },
 ];
 
@@ -286,8 +286,8 @@ function getAttendanceCellPresentation(record, dateKey, defaultPresentDateKey) {
     }
 
     return {
-      primaryLabel: "Present",
-      primaryTone: "is-present",
+      primaryLabel: "Absent",
+      primaryTone: "is-absent",
       secondaryLabel: "",
     };
   }
@@ -318,7 +318,7 @@ function getAttendanceCellPresentation(record, dateKey, defaultPresentDateKey) {
 
   if (record.status === "present") {
     return {
-      primaryLabel: record.is_late ? "Late Come" : "Present",
+      primaryLabel: record.is_late ? "Late Entry" : "Present",
       primaryTone: record.is_late ? "is-late" : "is-present",
       secondaryLabel: record.work_minutes ? formatHours(record.work_minutes) : "",
     };
@@ -333,7 +333,7 @@ function getAttendanceCellPresentation(record, dateKey, defaultPresentDateKey) {
 
 function getManualAttendanceValue(record, dateKey, defaultPresentDateKey) {
   if (!record) {
-    return dateKey === defaultPresentDateKey ? "present" : "";
+    return dateKey === defaultPresentDateKey ? "absent" : "";
   }
   if (record.status === "present" && record.is_late) {
     return "late_come";

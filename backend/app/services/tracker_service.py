@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import AuthContext
+from app.models.attendance import AttendanceLog
 from app.models.auth import User
 from app.models.employee import Employee
-from app.models.enums import DeviceStatus, TrackerSessionStatus
+from app.models.enums import DeviceStatus, EmployeeStatus, TrackerSessionStatus
 from app.models.tracker import Device, TrackerHeartbeat, TrackerIdleLog, TrackerSession
 from app.services.user_scope_service import UserScopeService
 
@@ -41,14 +42,22 @@ class TrackerService:
 
     @staticmethod
     def _find_active_session(db: Session, device_id: str) -> TrackerSession | None:
-        return db.execute(
+        sessions = db.execute(
             select(TrackerSession)
             .where(
                 TrackerSession.device_id == device_id,
                 TrackerSession.status == TrackerSessionStatus.ACTIVE.value,
             )
             .order_by(TrackerSession.started_at.desc(), TrackerSession.created_at.desc())
-        ).scalars().first()
+        ).scalars().all()
+        if not sessions:
+            return None
+        for duplicate in sessions[1:]:
+            duplicate.is_online = False
+            duplicate.status = TrackerSessionStatus.CLOSED.value
+            duplicate.ended_at = duplicate.ended_at or sessions[0].started_at
+            duplicate.logout_time = duplicate.logout_time or sessions[0].started_at
+        return sessions[0]
 
     @staticmethod
     def _find_active_dashboard_session(db: Session, principal_id: str) -> TrackerSession | None:
@@ -57,7 +66,7 @@ class TrackerService:
             select(TrackerSession)
             .join(Device, TrackerSession.device_id == Device.id)
             .where(
-                TrackerSession.employee_id == employee_id,
+                or_(TrackerSession.employee_id == principal_id, TrackerSession.user_id == principal_id),
                 TrackerSession.status == TrackerSessionStatus.ACTIVE.value,
                 Device.device_uuid == dashboard_uuid,
             )
@@ -132,12 +141,17 @@ class TrackerService:
     def _mark_stale_sessions_offline(db: Session, *, now: datetime | None = None) -> int:
         now = now or TrackerService._utcnow()
         stale_before = now - timedelta(seconds=TrackerService.ONLINE_STALE_SECONDS)
+        activity_at = func.coalesce(
+            TrackerSession.last_active_at,
+            TrackerSession.last_heartbeat,
+            TrackerSession.login_time,
+            TrackerSession.started_at,
+        )
         stale_sessions = db.execute(
             select(TrackerSession).where(
                 TrackerSession.status == TrackerSessionStatus.ACTIVE.value,
                 TrackerSession.is_online.is_(True),
-                TrackerSession.last_active_at.is_not(None),
-                TrackerSession.last_active_at < stale_before,
+                activity_at < stale_before,
             )
         ).scalars().all()
         for session in stale_sessions:
@@ -612,82 +626,181 @@ class TrackerService:
 
         if auth.access.is_super_admin or "*" in auth.access.permission_keys or "attendance.view.all" in auth.access.permission_keys:
             scope_employee_ids = None
-            scope_user_ids = None
         elif "attendance.view.team" in auth.access.permission_keys:
             scope_employee_ids = UserScopeService.get_team_employee_ids(db, auth, include_self=True)
-            scope_user_ids = {str(auth.user.id)}
         else:
             employee_id = UserScopeService.current_employee_id(auth)
             scope_employee_ids = {employee_id} if employee_id else set()
-            scope_user_ids = {str(auth.user.id)}
 
-        session_stmt = select(TrackerSession).order_by(
-            TrackerSession.started_at.desc(),
-            TrackerSession.created_at.desc(),
-        )
-        if scope_employee_ids is not None:
-            scope_conditions = []
-            if scope_employee_ids:
-                scope_conditions.append(TrackerSession.employee_id.in_(scope_employee_ids))
-            if scope_user_ids:
-                scope_conditions.append(TrackerSession.user_id.in_(scope_user_ids))
-            if not scope_conditions:
-                return {"items": [], "total": 0}
-            session_stmt = session_stmt.where(or_(*scope_conditions))
-
-        sessions = db.execute(session_stmt).scalars().all()
-        if not sessions:
-            return {"items": [], "total": 0}
-
-        device_ids = {str(item.device_id) for item in sessions}
-        employee_ids = {str(item.employee_id) for item in sessions if item.employee_id}
-        user_ids = {str(item.user_id) for item in sessions if item.user_id}
-        devices = db.execute(select(Device).where(Device.id.in_(device_ids))).scalars().all() if device_ids else []
-        employees = db.execute(
+        employee_stmt = (
             select(Employee)
             .options(joinedload(Employee.user), joinedload(Employee.department))
-            .where(Employee.id.in_(employee_ids))
-        ).scalars().all() if employee_ids else []
-        users = db.execute(
-            select(User)
-            .options(joinedload(User.role))
-            .where(User.id.in_(user_ids))
-        ).scalars().all() if user_ids else []
+            .join(User, Employee.user_id == User.id)
+            .where(
+                Employee.is_deleted.is_(False),
+                Employee.status == EmployeeStatus.ACTIVE.value,
+                User.is_active.is_(True),
+            )
+            .order_by(Employee.employee_code.asc())
+        )
+        if scope_employee_ids is not None:
+            if not scope_employee_ids:
+                return {"items": [], "total": 0}
+            employee_stmt = employee_stmt.where(Employee.id.in_(scope_employee_ids))
+
+        employees = db.execute(employee_stmt).scalars().unique().all()
+        if not employees:
+            return {"items": [], "total": 0}
+
+        employee_ids = {str(employee.id) for employee in employees}
+        employee_map = {str(employee.id): employee for employee in employees}
+        employee_user_ids = {str(employee.user_id) for employee in employees if employee.user_id}
+        session_activity_at = func.coalesce(
+            TrackerSession.last_active_at,
+            TrackerSession.last_heartbeat,
+            TrackerSession.logout_time,
+            TrackerSession.login_time,
+            TrackerSession.started_at,
+            TrackerSession.created_at,
+        )
+        today = date.today()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_end = today_start + timedelta(days=1)
+
+        attendance_logs = db.execute(
+            select(AttendanceLog)
+            .where(
+                AttendanceLog.employee_id.in_(employee_ids),
+                AttendanceLog.attendance_date == today,
+                AttendanceLog.check_in_at.is_not(None),
+            )
+            .order_by(
+                AttendanceLog.employee_id.asc(),
+                AttendanceLog.check_in_at.desc(),
+                AttendanceLog.updated_at.desc(),
+                AttendanceLog.created_at.desc(),
+            )
+        ).scalars().all()
+        latest_attendance_by_employee: dict[str, AttendanceLog] = {}
+        for log in attendance_logs:
+            latest_attendance_by_employee.setdefault(str(log.employee_id), log)
+
+        session_stmt = (
+            select(TrackerSession)
+            .where(
+                or_(
+                    TrackerSession.employee_id.in_(employee_ids),
+                    TrackerSession.user_id.in_(employee_user_ids),
+                ),
+                session_activity_at >= today_start,
+                session_activity_at < today_end,
+            )
+            .order_by(desc(session_activity_at), TrackerSession.started_at.desc(), TrackerSession.created_at.desc())
+        )
+
+        sessions = db.execute(session_stmt).scalars().all()
+
+        device_ids = {str(item.device_id) for item in sessions}
+        devices = db.execute(select(Device).where(Device.id.in_(device_ids))).scalars().all() if device_ids else []
 
         device_map = {str(item.id): item for item in devices}
-        employee_map = {str(item.id): item for item in employees}
-        user_map = {str(item.id): item for item in users}
 
+        session_ids = {str(item.id) for item in sessions}
         latest_heartbeat_rows = db.execute(
             select(TrackerHeartbeat)
-            .where(TrackerHeartbeat.device_id.in_(device_ids))
+            .where(TrackerHeartbeat.tracker_session_id.in_(session_ids))
             .order_by(TrackerHeartbeat.heartbeat_at.desc())
-        ).scalars().all() if device_ids else []
-        latest_heartbeat_by_device: dict[str, TrackerHeartbeat] = {}
+        ).scalars().all() if session_ids else []
+        latest_heartbeat_by_session: dict[str, TrackerHeartbeat] = {}
         for row in latest_heartbeat_rows:
-            latest_heartbeat_by_device.setdefault(str(row.device_id), row)
+            if row.tracker_session_id:
+                latest_heartbeat_by_session.setdefault(str(row.tracker_session_id), row)
 
         items: list[dict[str, object]] = []
         now = TrackerService._utcnow()
+        latest_session_by_employee: dict[str, TrackerSession] = {}
         for session in sessions:
-            employee = employee_map.get(str(session.employee_id)) if session.employee_id else None
-            user = user_map.get(str(session.user_id)) if session.user_id else (employee.user if employee else None)
-            if employee is None and user is None:
+            employee_id = str(session.employee_id) if session.employee_id else None
+            if employee_id is None and session.user_id:
+                employee_id = next(
+                    (str(employee.id) for employee in employees if str(employee.user_id) == str(session.user_id)),
+                    None,
+                )
+            if employee_id is None or employee_id not in employee_map or employee_id in latest_session_by_employee:
+                continue
+            latest_session_by_employee[employee_id] = session
+
+        for employee in employees:
+            employee_id = str(employee.id)
+            attendance_log = latest_attendance_by_employee.get(employee_id)
+            session = latest_session_by_employee.get(employee_id)
+            if attendance_log is None:
+                last_active_at = None
+                current_status = "offline"
+                login_time = None
+                logout_time = None
+            else:
+                login_time = TrackerService._normalize_datetime(attendance_log.check_in_at)
+                logout_time = TrackerService._normalize_datetime(attendance_log.check_out_at)
+                last_active_at = attendance_log.check_out_at or attendance_log.check_in_at
+                last_active_at = TrackerService._normalize_datetime(last_active_at)
+                current_status = "online" if attendance_log.check_out_at is None else "offline"
+
+            if session is None:
+                items.append(
+                    {
+                        "tracker_session_id": f"today-offline-{employee_id}",
+                        "employee_id": employee.id,
+                        "user_id": employee.user_id,
+                        "employee_name": employee.user.full_name if employee.user and employee.user.full_name else employee.employee_code,
+                        "employee_code": employee.employee_code,
+                        "login_time": login_time,
+                        "logout_time": logout_time,
+                        "last_heartbeat": last_active_at,
+                        "idle_minutes": 0,
+                        "active_status": current_status,
+                        "device_name": "No tracker session today",
+                        "system": "",
+                        "device_info": None,
+                        "session_token": None,
+                        "session_status": TrackerSessionStatus.CLOSED.value,
+                    }
+                )
                 continue
 
             device = device_map.get(str(session.device_id))
-            heartbeat = latest_heartbeat_by_device.get(str(session.device_id))
-            last_active_at = TrackerService._resolve_last_active(session, device, heartbeat.heartbeat_at if heartbeat else None)
-            current_status = TrackerService._current_status(session, last_active_at=last_active_at, now=now)
+            heartbeat = latest_heartbeat_by_session.get(str(session.id))
+            tracker_last_active_at = TrackerService._resolve_last_active(session, device, heartbeat.heartbeat_at if heartbeat else None)
+            last_active_at = max(
+                [item for item in [last_active_at, tracker_last_active_at] if item is not None],
+                default=tracker_last_active_at,
+            )
+            row = TrackerService._serialize_monitor_row(
+                session,
+                employee,
+                employee.user,
+                device,
+                last_active_at=last_active_at or tracker_last_active_at,
+                current_status=current_status,
+            )
+            row["login_time"] = login_time
+            row["logout_time"] = logout_time
+            row["last_heartbeat"] = last_active_at
             items.append(
-                TrackerService._serialize_monitor_row(
-                    session,
-                    employee,
-                    user,
-                    device,
-                    last_active_at=last_active_at,
-                    current_status=current_status,
-                )
+                row
             )
 
+        def sort_time(row: dict[str, object]) -> float:
+            value = row.get("last_heartbeat") or row.get("login_time") or row.get("logout_time")
+            if not isinstance(value, datetime):
+                return 0
+            return value.timestamp()
+
+        items.sort(
+            key=lambda row: (
+                0 if row.get("active_status") == "online" else 1,
+                -sort_time(row),
+                str(row.get("employee_name") or ""),
+            )
+        )
         return {"items": items, "total": len(items)}

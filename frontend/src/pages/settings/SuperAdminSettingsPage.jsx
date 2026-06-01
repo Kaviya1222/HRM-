@@ -34,6 +34,13 @@ const MODULE_ICONS = {
   settings: Sliders,
 };
 
+const ATTENDANCE_OPERATIONAL_SETTING_KEYS = [
+  "attendance.start_time",
+  "attendance.late_entry_range",
+  "attendance.half_day_range",
+];
+const SETTING_FIELD_ORDER = ["hour", "minute", "start_hour", "start_minute", "end_hour", "end_minute"];
+
 function AccordionSection({ title, icon: Icon, badge, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
 
@@ -184,17 +191,26 @@ function SuperAdminSettingsPage() {
       return null;
     }
 
-    return entries.map(([fieldKey, value]) => ({
-      fieldKey,
-      value,
-      label: fieldKey.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
-    }));
+    return entries
+      .map(([fieldKey, value]) => ({
+        fieldKey,
+        value,
+        label: fieldKey.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
+      }))
+      .sort((first, second) => {
+        const firstIndex = SETTING_FIELD_ORDER.indexOf(first.fieldKey);
+        const secondIndex = SETTING_FIELD_ORDER.indexOf(second.fieldKey);
+        return (firstIndex === -1 ? 999 : firstIndex) - (secondIndex === -1 ? 999 : secondIndex);
+      });
   }
 
   function updateSettingField(settingKey, fieldKey, newVal) {
     setSettingsDraft((draft) => ({
       ...draft,
-      [settingKey]: { ...draft[settingKey], [fieldKey]: Number(newVal) },
+      [settingKey]: {
+        ...draft[settingKey],
+        [fieldKey]: typeof newVal === "boolean" ? newVal : Number(newVal),
+      },
     }));
   }
 
@@ -255,7 +271,9 @@ function SuperAdminSettingsPage() {
       return;
     }
 
-    if (!file.type.startsWith("image/")) {
+    const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/svg+xml"];
+    const isAllowedExtension = /\.(png|jpe?g|svg)$/i.test(file.name);
+    if (!allowedTypes.includes(file.type) && !isAllowedExtension) {
       showToast("error", "Please upload a valid image file.");
       event.target.value = "";
       return;
@@ -264,7 +282,7 @@ function SuperAdminSettingsPage() {
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === "string") {
-        setBrandingDraft((current) => normalizeBranding({ ...current, logoDataUrl: reader.result }));
+        setBrandingDraft((current) => normalizeBranding({ ...current, logoDataUrl: reader.result, logoUrl: "" }));
       } else {
         showToast("error", "Unable to read the selected image.");
       }
@@ -275,7 +293,12 @@ function SuperAdminSettingsPage() {
   }
 
   const isSuperAdmin = roleMatrix?.role_code === "super_admin";
-  const operationalSettings = appSettings.filter((setting) => setting.category !== "branding");
+  const operationalSettings = appSettings
+    .filter((setting) => ATTENDANCE_OPERATIONAL_SETTING_KEYS.includes(setting.key))
+    .sort((first, second) => (
+      ATTENDANCE_OPERATIONAL_SETTING_KEYS.indexOf(first.key)
+      - ATTENDANCE_OPERATIONAL_SETTING_KEYS.indexOf(second.key)
+    ));
   const brandingPreviewText = brandingDraft.organizationName.trim().slice(0, 4).toUpperCase() || "HRM";
   const filteredPerms = roleMatrix?.permissions?.filter((permission) => (
     !permSearch
@@ -367,7 +390,7 @@ function SuperAdminSettingsPage() {
                   <input
                     className="sf-upload-input"
                     type="file"
-                    accept="image/*"
+                    accept="image/png,image/jpeg,image/jpg,image/svg+xml,.svg"
                     onChange={handleLogoUpload}
                   />
                   <span className="settings-btn settings-btn--subtle">
@@ -398,13 +421,21 @@ function SuperAdminSettingsPage() {
                     {fields?.map(({ fieldKey, value, label }) => (
                       <div className="sf-field sf-field--inline" key={fieldKey}>
                         <label className="sf-label">{label}</label>
-                        <input
-                          className="sf-input sf-input--short"
-                          type="number"
-                          min={0}
-                          value={value}
-                          onChange={(event) => updateSettingField(setting.key, fieldKey, event.target.value)}
-                        />
+                        {typeof value === "boolean" ? (
+                          <Toggle
+                            checked={value}
+                            onChange={(nextValue) => updateSettingField(setting.key, fieldKey, nextValue)}
+                          />
+                        ) : (
+                          <input
+                            className="sf-input sf-input--short"
+                            type="number"
+                            min={0}
+                            max={fieldKey.includes("hour") ? 23 : fieldKey.includes("minute") ? 59 : undefined}
+                            value={value}
+                            onChange={(event) => updateSettingField(setting.key, fieldKey, event.target.value)}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>

@@ -68,10 +68,16 @@ class ReportService:
         if summary is not None:
             return summary.status
 
-        log = db.execute(
+        logs = db.execute(
             select(AttendanceLog).where(AttendanceLog.employee_id == employee_id, AttendanceLog.attendance_date == target_date)
-        ).scalar_one_or_none()
-        return log.status if log else AttendanceStatus.ABSENT.value
+        ).scalars().all()
+        if any(log.status == AttendanceStatus.HALF_DAY.value for log in logs):
+            return AttendanceStatus.HALF_DAY.value
+        if any(log.check_in_at or log.status in {"online", "offline", AttendanceStatus.PRESENT.value} for log in logs):
+            return AttendanceStatus.PRESENT.value
+        if any(log.status == AttendanceStatus.ABSENT.value for log in logs):
+            return AttendanceStatus.ABSENT.value
+        return AttendanceStatus.ABSENT.value
 
     @staticmethod
     def monthly_attendance_report(db: Session, auth: AuthContext, *, month: int, year: int) -> dict[str, object]:

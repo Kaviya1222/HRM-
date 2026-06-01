@@ -13,6 +13,7 @@ from app.models.auth import Role, User
 from app.models.employee import Employee
 from app.models.enums import AttendanceStatus, EmployeeStatus, LeaveRequestStatus
 from app.models.leave import LeaveApproval, LeaveBalance, LeaveRequest, LeaveType
+from app.services.email_service import EmailService
 from app.services.notification_service import NotificationService
 from app.services.user_scope_service import UserScopeService
 
@@ -145,6 +146,39 @@ class LeaveService:
             .where(User.is_active.is_(True), Role.code.in_(["super_admin", "admin", "hr"]))
         ).scalars().all()
         return [str(user.id) for user in users]
+
+    @staticmethod
+    def _send_leave_decision_email(
+        *,
+        employee: Employee,
+        leave_type: LeaveType,
+        leave_request: LeaveRequest,
+        decision: str,
+        remarks: str | None,
+    ) -> tuple[bool, str | None]:
+        employee_name = employee.user.full_name if employee.user else employee.employee_code
+        status_label = "Approved" if decision == LeaveRequestStatus.APPROVED.value else "Rejected"
+        remarks_label = "Remarks" if decision == LeaveRequestStatus.APPROVED.value else "Rejection reason / remarks"
+        body_lines = [
+            f"Hello {employee_name},",
+            "",
+            f"Your leave request has been {status_label.lower()}.",
+            "",
+            f"Employee: {employee_name}",
+            f"Leave type: {leave_type.name}",
+            f"Start date: {leave_request.start_date}",
+            f"End date: {leave_request.end_date}",
+            f"Total days: {leave_request.total_days}",
+            f"Status: {status_label}",
+        ]
+        if remarks:
+            body_lines.append(f"{remarks_label}: {remarks}")
+        body_lines.extend(["", "Regards,", "HRM"])
+        return EmailService.send_email(
+            to_email=employee.user.email if employee.user else None,
+            subject=f"Leave Request {status_label}",
+            body="\n".join(body_lines),
+        )
 
     @staticmethod
     def get_meta(db: Session, auth: AuthContext) -> dict[str, object]:
@@ -388,4 +422,19 @@ class LeaveService:
             target_url="/leave",
         )
         db.commit()
-        return {"message": f"Leave request {normalized_decision} successfully", "leave_request_id": leave_request.id}
+        email_sent, email_error = LeaveService._send_leave_decision_email(
+            employee=employee,
+            leave_type=leave_type,
+            leave_request=leave_request,
+            decision=normalized_decision,
+            remarks=normalized_remarks,
+        )
+        response_message = f"Leave request {normalized_decision} successfully"
+        if not email_sent:
+            response_message = f"{response_message}, but email notification could not be sent."
+        return {
+            "message": response_message,
+            "leave_request_id": leave_request.id,
+            "email_sent": email_sent,
+            "email_error": email_error,
+        }

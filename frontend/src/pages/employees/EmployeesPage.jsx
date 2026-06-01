@@ -6,6 +6,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Trash2,
   UserCheck,
   UserPlus,
   Users,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   createEmployee,
+  deleteEmployee,
   fetchEmployeeDetail,
   fetchEmployeeMeta,
   fetchEmployees,
@@ -149,7 +151,37 @@ function getErrorMessage(error, fallback) {
     return detail.msg || detail.message || fallback;
   }
 
+  if (error?.request && !error?.response) {
+    return fallback;
+  }
+
   return error?.message || fallback;
+}
+
+function validateEmployeeForm(formState, formMode) {
+  if (!formState.first_name.trim()) {
+    return "First name is required.";
+  }
+  if (!formState.last_name.trim()) {
+    return "Last name is required.";
+  }
+  if (!formState.email.trim()) {
+    return "Email is required.";
+  }
+  if (!formState.role_id) {
+    return "Select a role before saving the employee.";
+  }
+  if (!formState.employee_code.trim()) {
+    return "Employee code is required.";
+  }
+  if (formMode === "create" && !formState.password.trim()) {
+    return "Password is required.";
+  }
+  if ((formMode === "create" || formState.password.trim()) && formState.password.trim().length < 8) {
+    return "Password must be at least 8 characters.";
+  }
+
+  return "";
 }
 
 function EmployeesPage() {
@@ -175,10 +207,11 @@ function EmployeesPage() {
   const [feedback, setFeedback] = useState({ type: "", message: "" });
   const [openSelectName, setOpenSelectName] = useState("");
 
-  const canCreate = hasPermission("employees.create") && hasPermission("users.create");
-  const canEdit = hasPermission("employees.edit") && hasPermission("users.edit");
+  const canCreate = hasPermission("employees.create");
+  const canEdit = hasPermission("employees.edit");
   const canDeactivate = hasPermission("employees.deactivate") && hasPermission("users.deactivate");
   const canActivate = hasPermission("employees.deactivate") && hasPermission("users.activate");
+  const canDelete = canDeactivate;
 
   const managerOptions = useMemo(
     () => meta.managers.filter((manager) => manager.id !== selectedEmployeeId),
@@ -223,22 +256,27 @@ function EmployeesPage() {
   useEffect(() => {
     async function loadInitialData() {
       setIsInitialLoading(true);
-      try {
-        const [metaResponse, employeeResponse] = await Promise.all([
-          fetchEmployeeMeta(),
-          fetchEmployees(),
-        ]);
-        setMeta(metaResponse);
-        setEmployees(employeeResponse.items);
-        setTotalEmployees(employeeResponse.total);
-      } catch (error) {
+      const [metaResult, employeeResult] = await Promise.allSettled([
+        fetchEmployeeMeta(),
+        fetchEmployees(),
+      ]);
+
+      if (metaResult.status === "fulfilled") {
+        setMeta(metaResult.value);
+      }
+
+      if (employeeResult.status === "fulfilled") {
+        setEmployees(employeeResult.value.items);
+        setTotalEmployees(employeeResult.value.total);
+        setFeedback((current) => (current.type === "error" ? { type: "", message: "" } : current));
+      } else {
         setFeedback({
           type: "error",
-          message: getErrorMessage(error, "Unable to load employee management data."),
+          message: getErrorMessage(employeeResult.reason, "Unable to load employee management data."),
         });
-      } finally {
-        setIsInitialLoading(false);
       }
+
+      setIsInitialLoading(false);
     }
 
     loadInitialData();
@@ -325,9 +363,16 @@ function EmployeesPage() {
       setMeta(response);
       setFeedback((current) => (current.type === "error" ? { type: "", message: "" } : current));
     } catch (error) {
-      setFeedback({
-        type: "error",
-        message: getErrorMessage(error, "Unable to refresh employee catalogs."),
+      setFeedback((current) => {
+        const hasCatalogData = meta.roles.length || meta.departments.length || meta.designations.length || meta.managers.length;
+        if (hasCatalogData) {
+          return current.type === "error" ? { type: "", message: "" } : current;
+        }
+
+        return {
+          type: "error",
+          message: getErrorMessage(error, "Unable to refresh employee catalogs."),
+        };
       });
     }
   }
@@ -424,7 +469,6 @@ function EmployeesPage() {
   async function handleSubmit(event) {
     event.preventDefault();
     setFeedback({ type: "", message: "" });
-    setIsSaving(true);
 
     try {
       if (formMode === "create" && !canCreate) {
@@ -433,30 +477,36 @@ function EmployeesPage() {
       if (formMode === "edit" && !selectedEmployeeId) {
         throw new Error("Select an employee from the list before saving edits.");
       }
-      if (!formState.role_id) {
-        throw new Error("Select a role before saving the employee.");
+
+      const validationError = validateEmployeeForm(formState, formMode);
+      if (validationError) {
+        throw new Error(validationError);
       }
 
+      setIsSaving(true);
       const payload = buildPayload();
       if (formMode === "edit" && selectedEmployeeId) {
         await updateEmployee(selectedEmployeeId, payload);
         setFeedback({ type: "success", message: "Employee updated successfully." });
       } else {
-        await createEmployee(payload);
+        const createdEmployee = await createEmployee(payload);
         setShowEmployeeForm(false);
         setFormState(createEmptyForm());
         setSearch("");
         setStatusFilter("all");
-        setFeedback({ type: "success", message: "Employee created successfully." });
+        setEmployees((current) => [createdEmployee, ...current.filter((employee) => employee.id !== createdEmployee.id)]);
+        setTotalEmployees((current) => current + 1);
       }
 
       const nextFilters = formMode === "edit" ? buildFilters() : {};
-      await Promise.all([loadEmployees(nextFilters), refreshMeta()]);
+      await loadEmployees(nextFilters);
+      await refreshMeta();
+      setFeedback({ type: "success", message: formMode === "edit" ? "Employee updated successfully." : "Employee created successfully." });
       notifyEmployeeDirectoryUpdated();
     } catch (error) {
       setFeedback({
         type: "error",
-        message: getErrorMessage(error, "Unable to save employee details."),
+        message: getErrorMessage(error, formMode === "create" ? "Unable to create employee. Please check the details and try again." : "Unable to save employee details."),
       });
     } finally {
       setIsSaving(false);
@@ -480,6 +530,36 @@ function EmployeesPage() {
         type: "error",
         message: getErrorMessage(error, "Unable to update employee status."),
       });
+    }
+  }
+
+  async function handleDeleteEmployee(employee) {
+    if (!canDelete) {
+      setFeedback({ type: "error", message: "You do not have permission to delete employees." });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete ${employee.full_name}? This will remove the employee from the Employee page.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setIsListLoading(true);
+    setFeedback({ type: "", message: "" });
+    try {
+      await deleteEmployee(employee.id);
+      setEmployees((current) => current.filter((item) => item.id !== employee.id));
+      setTotalEmployees((current) => Math.max(0, current - 1));
+      setFeedback({ type: "success", message: "Employee deleted successfully." });
+      await refreshMeta();
+      notifyEmployeeDirectoryUpdated();
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: getErrorMessage(error, "Unable to delete employee."),
+      });
+    } finally {
+      setIsListLoading(false);
     }
   }
 
@@ -630,6 +710,7 @@ function EmployeesPage() {
                               {employee.is_active ? "Deactivate" : "Activate"}
                             </button>
                           ) : null}
+
                         </div>
                       </td>
                     </tr>

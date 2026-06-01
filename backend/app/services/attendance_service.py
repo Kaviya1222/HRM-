@@ -5,7 +5,6 @@ from datetime import UTC, date, datetime, time, timedelta
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import AuthContext
@@ -21,15 +20,63 @@ from app.services.user_scope_service import UserScopeService
 
 
 class AttendanceService:
+    SESSION_ONLINE = "online"
+    SESSION_OFFLINE = "offline"
+
+    @staticmethod
+    def _time_parts(value: dict[str, object], default_hour: int, default_minute: int) -> tuple[int, int]:
+        try:
+            hour = int(value.get("hour", default_hour))
+            minute = int(value.get("minute", default_minute))
+        except (TypeError, ValueError):
+            return default_hour, default_minute
+        return min(max(hour, 0), 23), min(max(minute, 0), 59)
+
     @staticmethod
     def _thresholds(db: Session) -> dict[str, int]:
-        workday_start = SettingsService.get_object_setting(db, "attendance.workday_start", {"hour": 9, "minute": 0})
+        check_in_start = SettingsService.get_object_setting(db, "attendance.start_time", {"hour": 9, "minute": 30})
+        late_entry_range = SettingsService.get_object_setting(
+            db,
+            "attendance.late_entry_range",
+            {"start_hour": 9, "start_minute": 45, "end_hour": 13, "end_minute": 0},
+        )
+        half_day_range = SettingsService.get_object_setting(
+            db,
+            "attendance.half_day_range",
+            {"start_hour": 13, "start_minute": 1, "end_hour": 18, "end_minute": 30},
+        )
+        start_hour, start_minute = AttendanceService._time_parts(check_in_start, 9, 30)
+        late_start_hour, late_start_minute = AttendanceService._time_parts(
+            {"hour": late_entry_range.get("start_hour"), "minute": late_entry_range.get("start_minute")},
+            9,
+            45,
+        )
+        late_end_hour, late_end_minute = AttendanceService._time_parts(
+            {"hour": late_entry_range.get("end_hour"), "minute": late_entry_range.get("end_minute")},
+            13,
+            0,
+        )
+        half_start_hour, half_start_minute = AttendanceService._time_parts(
+            {"hour": half_day_range.get("start_hour"), "minute": half_day_range.get("start_minute")},
+            13,
+            1,
+        )
+        half_end_hour, half_end_minute = AttendanceService._time_parts(
+            {"hour": half_day_range.get("end_hour"), "minute": half_day_range.get("end_minute")},
+            18,
+            30,
+        )
         return {
-            "late_mark_after_minutes": SettingsService.get_numeric_setting(db, "attendance.late_mark_after_minutes", "minutes", 15),
-            "half_day_min_minutes": SettingsService.get_numeric_setting(db, "attendance.half_day_min_minutes", "minutes", 240),
-            "full_day_min_minutes": SettingsService.get_numeric_setting(db, "attendance.full_day_min_minutes", "minutes", 480),
-            "workday_start_hour": int(workday_start.get("hour", 9)),
-            "workday_start_minute": int(workday_start.get("minute", 0)),
+            "workday_start_hour": start_hour,
+            "workday_start_minute": start_minute,
+            "late_start_hour": late_start_hour,
+            "late_start_minute": late_start_minute,
+            "late_end_hour": late_end_hour,
+            "late_end_minute": late_end_minute,
+            "half_day_start_hour": half_start_hour,
+            "half_day_start_minute": half_start_minute,
+            "half_day_end_hour": half_end_hour,
+            "half_day_end_minute": half_end_minute,
         }
 
     @staticmethod
@@ -115,7 +162,14 @@ class AttendanceService:
         }
 
     @staticmethod
-    def _serialize_user_item(*, user: User, attendance_date: date, log: AttendanceLog | None = None, sessions: list[dict[str, object]] | None = None) -> dict[str, object]:
+    def _serialize_user_item(
+        *,
+        user: User,
+        attendance_date: date,
+        log: AttendanceLog | None = None,
+        status_override: str | None = None,
+        sessions: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
         return {
             "id": log.id if log else None,
             "employee_id": None,
@@ -129,7 +183,7 @@ class AttendanceService:
             "check_out_at": log.check_out_at if log else None,
             "work_minutes": log.work_minutes if log else 0,
             "work_seconds": log.work_seconds if log else 0,
-            "status": log.status if log else AttendanceStatus.ABSENT.value,
+            "status": status_override or (log.status if log else AttendanceStatus.ABSENT.value),
             "is_late": log.is_late if log else False,
             "source": log.source if log else "web",
             "corrected_at": log.corrected_at if log else None,
@@ -249,23 +303,24 @@ class AttendanceService:
         return int(log.work_seconds or 0)
 
     @staticmethod
-    def _serialize_grouped_item(*, employee: Employee, attendance_date: date, logs: list[AttendanceLog]) -> dict[str, object]:
+    def _serialize_grouped_item(*, employee: Employee, attendance_date: date, logs: list[AttendanceLog], thresholds: dict[str, int] | None = None) -> dict[str, object]:
         ordered_logs = sorted(logs, key=lambda item: (item.check_in_at or item.created_at, item.created_at))
         latest_log = max(ordered_logs, key=lambda item: (item.updated_at, item.created_at))
         check_in_values = [item.check_in_at for item in ordered_logs if item.check_in_at]
         check_out_values = [item.check_out_at for item in ordered_logs if item.check_out_at]
         total_work_seconds = sum(AttendanceService._session_work_seconds(item) for item in ordered_logs)
         total_work_minutes = total_work_seconds // 60
-        has_check_in = bool(check_in_values)
+        first_check_in = min(check_in_values) if check_in_values else None
+        status_value = AttendanceService._status_after_check_in(first_check_in, thresholds) if thresholds and first_check_in else latest_log.status
 
         item = AttendanceService._serialize_item(
             employee=employee,
             attendance_date=attendance_date,
             log=latest_log,
-            status_override=AttendanceStatus.PRESENT.value if has_check_in else latest_log.status,
+            status_override=status_value,
             sessions=[AttendanceService._serialize_session(item) for item in ordered_logs],
         )
-        item["check_in_at"] = min(check_in_values) if check_in_values else latest_log.check_in_at
+        item["check_in_at"] = first_check_in or latest_log.check_in_at
         item["check_out_at"] = max(check_out_values) if check_out_values else None
         item["work_minutes"] = total_work_minutes
         item["work_seconds"] = total_work_seconds
@@ -273,20 +328,46 @@ class AttendanceService:
         return item
 
     @staticmethod
-    def _derive_status(work_minutes: int, thresholds: dict[str, int]) -> str:
-        if work_minutes >= thresholds["full_day_min_minutes"]:
-            return AttendanceStatus.PRESENT.value
-        if work_minutes >= thresholds["half_day_min_minutes"]:
-            return AttendanceStatus.HALF_DAY.value
-        return AttendanceStatus.ABSENT.value
+    def _time_for_date(target: datetime, hour_key: str, minute_key: str, thresholds: dict[str, int]) -> datetime:
+        return datetime.combine(
+            target.date(),
+            time(thresholds[hour_key], thresholds[minute_key], tzinfo=target.tzinfo),
+        )
+
+    @staticmethod
+    def _derive_status(work_minutes: int, thresholds: dict[str, int], *, check_in_at: datetime | None = None) -> str:
+        return AttendanceService._status_after_check_in(check_in_at, thresholds)
 
     @staticmethod
     def _is_late(check_in_at: datetime, thresholds: dict[str, int]) -> bool:
-        start_dt = datetime.combine(
-            check_in_at.date(),
-            time(thresholds["workday_start_hour"], thresholds["workday_start_minute"], tzinfo=check_in_at.tzinfo),
-        )
-        return check_in_at > start_dt + timedelta(minutes=thresholds["late_mark_after_minutes"])
+        late_start = AttendanceService._time_for_date(check_in_at, "late_start_hour", "late_start_minute", thresholds)
+        late_end = AttendanceService._time_for_date(check_in_at, "late_end_hour", "late_end_minute", thresholds)
+        return late_start <= check_in_at <= late_end
+
+    @staticmethod
+    def _is_after_late_cutoff(check_in_at: datetime, thresholds: dict[str, int]) -> bool:
+        half_day_end = AttendanceService._time_for_date(check_in_at, "half_day_end_hour", "half_day_end_minute", thresholds)
+        return check_in_at > half_day_end
+
+    @staticmethod
+    def _status_after_check_in(check_in_at: datetime | None, thresholds: dict[str, int]) -> str:
+        if check_in_at is None:
+            return AttendanceStatus.ABSENT.value
+        start_time = AttendanceService._time_for_date(check_in_at, "workday_start_hour", "workday_start_minute", thresholds)
+        late_start = AttendanceService._time_for_date(check_in_at, "late_start_hour", "late_start_minute", thresholds)
+        late_end = AttendanceService._time_for_date(check_in_at, "late_end_hour", "late_end_minute", thresholds)
+        half_day_start = AttendanceService._time_for_date(check_in_at, "half_day_start_hour", "half_day_start_minute", thresholds)
+        half_day_end = AttendanceService._time_for_date(check_in_at, "half_day_end_hour", "half_day_end_minute", thresholds)
+
+        if check_in_at <= start_time or check_in_at < late_start:
+            return AttendanceStatus.PRESENT.value
+        if late_start <= check_in_at <= late_end:
+            return AttendanceStatus.PRESENT.value
+        if half_day_start <= check_in_at <= half_day_end:
+            return AttendanceStatus.HALF_DAY.value
+        if late_end < check_in_at < half_day_start:
+            return AttendanceStatus.HALF_DAY.value
+        return AttendanceStatus.ABSENT.value
 
     @staticmethod
     def _upsert_daily_summary(
@@ -367,14 +448,16 @@ class AttendanceService:
             open_log = AttendanceService._open_today_log_for_user(db, user_id=str(auth.user.id), today=today)
             log = open_log or latest_log
             thresholds = AttendanceService._thresholds(db)
+            status_value = AttendanceService._status_after_check_in(log.check_in_at, thresholds) if log and log.check_in_at else AttendanceStatus.ABSENT.value
             return {
                 "today": today,
                 "thresholds": thresholds,
-                "status": AttendanceStatus.PRESENT.value if log and log.check_in_at else AttendanceStatus.ABSENT.value,
+                "status": status_value,
                 "log": AttendanceService._serialize_user_item(
                     user=auth.user,
                     attendance_date=today,
                     log=log,
+                    status_override=status_value,
                     sessions=[AttendanceService._serialize_session(item) for item in logs],
                 ),
                 "can_check_in": can_check_in_by_permission and open_log is None,
@@ -387,7 +470,11 @@ class AttendanceService:
         open_log = AttendanceService._open_today_log_for_employee(db, employee_id=str(employee.id), today=today)
         log = open_log or latest_log
         thresholds = AttendanceService._thresholds(db)
-        status_value = AttendanceStatus.LEAVE.value if leave_request else (AttendanceStatus.PRESENT.value if log and log.check_in_at else AttendanceStatus.ABSENT.value)
+        status_value = (
+            AttendanceStatus.LEAVE.value
+            if leave_request
+            else (AttendanceService._status_after_check_in(log.check_in_at, thresholds) if log and log.check_in_at else AttendanceStatus.ABSENT.value)
+        )
         return {
             "today": today,
             "thresholds": thresholds,
@@ -396,7 +483,7 @@ class AttendanceService:
                 employee=employee,
                 attendance_date=today,
                 log=log,
-                status_override=status_value if leave_request else None,
+                status_override=status_value,
                 sessions=[AttendanceService._serialize_session(item) for item in logs],
             ),
             "can_check_in": can_check_in_by_permission and leave_request is None and open_log is None,
@@ -416,63 +503,62 @@ class AttendanceService:
             else AttendanceService._open_today_log_for_user(db, user_id=str(auth.user.id), today=today)
         )
         if open_log is not None:
-            TrackerService.sync_dashboard_check_in(db, auth, open_log.check_in_at)
-            serialized_log = (
-                AttendanceService._serialize_item(employee=employee, attendance_date=today, log=open_log)
-                if employee
-                else AttendanceService._serialize_user_item(user=auth.user, attendance_date=today, log=open_log)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You are already checked in. Please check out first.",
             )
-            return {"message": "Checked in successfully", "log": serialized_log}
 
         payload = payload or {}
         now = AttendanceService._normalize_datetime(payload.get("check_in_at")) or datetime.now(UTC).replace(tzinfo=None)
         thresholds = AttendanceService._thresholds(db)
+        semantic_status = AttendanceService._status_after_check_in(now, thresholds)
         log = AttendanceLog(
             employee_id=employee.id if employee else None,
             user_id=auth.user.id if employee is None else None,
             attendance_date=today,
             check_in_at=now,
-            status=AttendanceStatus.PRESENT.value,
+            status=AttendanceService.SESSION_ONLINE,
             is_late=AttendanceService._is_late(now, thresholds),
             source="web",
         )
         db.add(log)
 
         if employee:
+            db.flush()
             current_work_minutes = AttendanceService._total_work_minutes_for_employee_date(db, employee_id=str(employee.id), attendance_date=today)
             current_work_seconds = AttendanceService._total_work_seconds_for_employee_date(db, employee_id=str(employee.id), attendance_date=today)
             AttendanceService._upsert_daily_summary(
                 db,
                 employee_id=str(employee.id),
                 summary_date=today,
-                status=AttendanceStatus.PRESENT.value,
+                status=semantic_status,
                 work_minutes=current_work_minutes,
                 work_seconds=current_work_seconds,
             )
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            log = (
-                AttendanceService._open_today_log_for_employee(db, employee_id=str(employee.id), today=today)
-                if employee
-                else AttendanceService._open_today_log_for_user(db, user_id=str(auth.user.id), today=today)
-            )
-            if log is None:
-                raise
-            TrackerService.sync_dashboard_check_in(db, auth, log.check_in_at)
-            serialized_log = (
-                AttendanceService._serialize_item(employee=employee, attendance_date=today, log=log)
-                if employee
-                else AttendanceService._serialize_user_item(user=auth.user, attendance_date=today, log=log)
-            )
-            return {"message": "Checked in successfully", "log": serialized_log}
+        db.commit()
         db.refresh(log)
         TrackerService.sync_dashboard_check_in(db, auth, log.check_in_at)
-        serialized_log = (
-            AttendanceService._serialize_item(employee=employee, attendance_date=today, log=log)
+        logs = (
+            AttendanceService._today_logs_for_employee(db, employee_id=str(employee.id), today=today)
             if employee
-            else AttendanceService._serialize_user_item(user=auth.user, attendance_date=today, log=log)
+            else AttendanceService._today_logs_for_user(db, user_id=str(auth.user.id), today=today)
+        )
+        serialized_log = (
+            AttendanceService._serialize_item(
+                employee=employee,
+                attendance_date=today,
+                log=log,
+                status_override=semantic_status,
+                sessions=[AttendanceService._serialize_session(item) for item in logs],
+            )
+            if employee
+            else AttendanceService._serialize_user_item(
+                user=auth.user,
+                attendance_date=today,
+                log=log,
+                status_override=semantic_status,
+                sessions=[AttendanceService._serialize_session(item) for item in logs],
+            )
         )
         return {"message": "Checked in successfully", "log": serialized_log}
 
@@ -525,11 +611,13 @@ class AttendanceService:
             else AttendanceService._calculate_work_seconds(log.check_in_at, now)
         )
         work_minutes = work_seconds // 60
-        status_value = AttendanceStatus.PRESENT.value
+        thresholds = AttendanceService._thresholds(db)
+        status_value = AttendanceService._derive_status(work_minutes, thresholds, check_in_at=log.check_in_at)
         log.check_out_at = now
         log.work_minutes = work_minutes
         log.work_seconds = work_seconds
-        log.status = status_value
+        log.status = AttendanceService.SESSION_OFFLINE
+        log.is_late = AttendanceService._is_late(log.check_in_at, thresholds)
         db.flush()
 
         if employee:
@@ -539,17 +627,34 @@ class AttendanceService:
                 db,
                 employee_id=str(employee.id),
                 summary_date=today,
-                status=status_value,
+                status=AttendanceService._derive_status(total_work_minutes, thresholds, check_in_at=log.check_in_at),
                 work_minutes=total_work_minutes,
                 work_seconds=total_work_seconds,
             )
         db.commit()
         db.refresh(log)
         TrackerService.sync_dashboard_check_out(db, auth, log.check_out_at or now)
-        serialized_log = (
-            AttendanceService._serialize_item(employee=employee, attendance_date=today, log=log)
+        logs = (
+            AttendanceService._today_logs_for_employee(db, employee_id=str(employee.id), today=today)
             if employee
-            else AttendanceService._serialize_user_item(user=auth.user, attendance_date=today, log=log)
+            else AttendanceService._today_logs_for_user(db, user_id=str(auth.user.id), today=today)
+        )
+        serialized_log = (
+            AttendanceService._serialize_item(
+                employee=employee,
+                attendance_date=today,
+                log=log,
+                status_override=status_value,
+                sessions=[AttendanceService._serialize_session(item) for item in logs],
+            )
+            if employee
+            else AttendanceService._serialize_user_item(
+                user=auth.user,
+                attendance_date=today,
+                log=log,
+                status_override=status_value,
+                sessions=[AttendanceService._serialize_session(item) for item in logs],
+            )
         )
         return {"message": "Checked out successfully", "log": serialized_log}
 
@@ -598,6 +703,7 @@ class AttendanceService:
                 employee=employee_map[employee_id],
                 attendance_date=attendance_date,
                 logs=logs_by_key[(employee_id, attendance_date)],
+                thresholds=AttendanceService._thresholds(db),
             )
             for (employee_id, attendance_date), log in log_map.items()
             if employee_id in employee_map
@@ -628,7 +734,6 @@ class AttendanceService:
                     )
                 )
 
-        represented_employee_ids = {str(item["employee_id"]) for item in items}
         if start_date == end_date:
             placeholder_date = start_date
         elif start_date <= today <= end_date:
@@ -644,7 +749,7 @@ class AttendanceService:
         if placeholder_date is not None:
             for employee in employees:
                 employee_id = str(employee.id)
-                if employee_id in represented_employee_ids:
+                if (employee_id, placeholder_date) in log_map:
                     continue
 
                 matching_leave = leave_lookup.get((employee_id, placeholder_date))
@@ -652,7 +757,7 @@ class AttendanceService:
                     AttendanceService._serialize_item(
                         employee=employee,
                         attendance_date=placeholder_date,
-                        status_override=AttendanceStatus.LEAVE.value if matching_leave else AttendanceStatus.PRESENT.value,
+                        status_override=AttendanceStatus.LEAVE.value if matching_leave else AttendanceStatus.ABSENT.value,
                         leave_request_id=str(matching_leave.id) if matching_leave else None,
                     )
                 )
@@ -692,11 +797,10 @@ class AttendanceService:
         if employee is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-        thresholds = AttendanceService._thresholds(db)
         status_map = {
-            "present": (AttendanceStatus.PRESENT.value, thresholds["full_day_min_minutes"], False),
-            "late_come": (AttendanceStatus.PRESENT.value, thresholds["full_day_min_minutes"], True),
-            "half_day": (AttendanceStatus.HALF_DAY.value, thresholds["half_day_min_minutes"], False),
+            "present": (AttendanceStatus.PRESENT.value, 0, False),
+            "late_come": (AttendanceStatus.PRESENT.value, 0, True),
+            "half_day": (AttendanceStatus.HALF_DAY.value, 0, False),
             "absent": (AttendanceStatus.ABSENT.value, 0, False),
         }
         if selected_status not in status_map:
@@ -814,7 +918,11 @@ class AttendanceService:
         thresholds = AttendanceService._thresholds(db)
         work_seconds = AttendanceService._calculate_work_seconds(new_check_in, new_check_out) if new_check_out else 0
         work_minutes = work_seconds // 60
-        status_value = AttendanceService._derive_status(work_minutes, thresholds) if new_check_out else AttendanceStatus.PRESENT.value
+        status_value = (
+            AttendanceService._derive_status(work_minutes, thresholds, check_in_at=new_check_in)
+            if new_check_out
+            else AttendanceService._status_after_check_in(new_check_in, thresholds)
+        )
 
         log.check_in_at = new_check_in
         log.check_out_at = new_check_out

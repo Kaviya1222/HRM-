@@ -12,8 +12,10 @@ from app.models.attendance import AttendanceLog
 from app.models.employee import Employee
 from app.models.enums import AttendanceStatus, LeaveRequestStatus
 from app.models.leave import LeaveRequest, LeaveType
-from app.models.payroll import PayrollRun, Payslip, SalaryStructure
-from app.models.utility import Holiday
+from app.models.payroll import SalaryStructure
+from app.models.utility import CalendarEvent, Holiday
+from app.services.attendance_service import AttendanceService
+from app.services.payroll_service import PayrollService
 from app.services.report_service import ReportService
 from app.services.user_scope_service import UserScopeService
 
@@ -104,13 +106,7 @@ class DashboardService:
             )
         ).scalars().all()
 
-        latest_logs: dict[tuple[str, date], AttendanceLog] = {}
-        for log in logs:
-            log_key = (str(log.employee_id), log.attendance_date)
-            existing_log = latest_logs.get(log_key)
-            if existing_log is None or (log.updated_at, log.created_at) >= (existing_log.updated_at, existing_log.created_at):
-                latest_logs[log_key] = log
-        return list(latest_logs.values())
+        return logs
 
     @staticmethod
     def _current_period_salary_structure_map(db: Session, *, employee_ids: list[str], period_start: date, period_end: date) -> dict[str, SalaryStructure]:
@@ -151,7 +147,7 @@ class DashboardService:
             day_logs = logs_by_day.get(target_date, [])
             worked_logs = [log for log in day_logs if log.work_minutes]
             total_minutes = sum(log.work_minutes for log in worked_logs)
-            present_count = len(worked_logs)
+            present_count = len({str(log.employee_id) for log in worked_logs})
             total_hours.append(round(total_minutes / 60, 2))
             average_hours.append(round((total_minutes / max(present_count, 1)) / 60, 2) if present_count else 0)
 
@@ -163,7 +159,7 @@ class DashboardService:
         }
 
     @staticmethod
-    def _leave_usage_analysis(db: Session, *, active_employee_ids: list[str], today: date) -> dict[str, object]:
+    def _leave_usage_analysis(db: Session, *, employee_ids: list[str], today: date) -> dict[str, object]:
         month_starts = DashboardService._month_starts(today, 6)
         month_keys = [(item.year, item.month) for item in month_starts]
         labels = [item.strftime("%b %Y") for item in month_starts]
@@ -171,28 +167,31 @@ class DashboardService:
 
         start_window = month_starts[0]
         end_window = DashboardService._shift_month(today.replace(day=1), 1) - timedelta(days=1)
-        approved_leaves = DashboardService._leave_requests_in_scope(
+        leave_requests = DashboardService._leave_requests_in_scope(
             db,
-            employee_ids=active_employee_ids,
+            employee_ids=employee_ids,
             start_date=start_window,
             end_date=end_window,
-            status_value=LeaveRequestStatus.APPROVED.value,
         )
-        leave_type_map = {
-            str(item.id): item.name
-            for item in db.execute(select(LeaveType)).scalars().all()
-        }
-        leave_type_totals: dict[str, int] = {}
+        leave_types = sorted(db.execute(select(LeaveType)).scalars().all(), key=lambda item: item.name)
+        leave_type_map = {str(item.id): item.name for item in leave_types}
+        leave_type_totals: dict[str, int] = {str(item.id): 0 for item in leave_types}
 
-        for leave_request in approved_leaves:
+        excluded_statuses = {LeaveRequestStatus.REJECTED.value, LeaveRequestStatus.CANCELLED.value}
+        for leave_request in leave_requests:
+            if leave_request.status in excluded_statuses:
+                continue
             effective_start = max(leave_request.start_date, start_window)
             effective_end = min(leave_request.end_date, end_window)
+            if effective_start > effective_end:
+                continue
+            leave_type_key = str(leave_request.leave_type_id)
+            leave_type_totals.setdefault(leave_type_key, 0)
             for leave_day in DashboardService._daterange(effective_start, effective_end):
                 month_key = (leave_day.year, leave_day.month)
                 if month_key not in month_totals:
                     continue
                 month_totals[month_key] += 1
-                leave_type_key = str(leave_request.leave_type_id)
                 leave_type_totals[leave_type_key] = leave_type_totals.get(leave_type_key, 0) + 1
 
         return {
@@ -208,7 +207,7 @@ class DashboardService:
     def _attendance_trend(
         active_employee_ids: list[str],
         logs: list[AttendanceLog],
-        approved_recent_leaves: list[LeaveRequest],
+        recent_leaves: list[LeaveRequest],
         today: date,
         *,
         days: int = 30,
@@ -218,12 +217,23 @@ class DashboardService:
         leave_series: list[int] = []
         absent_series: list[int] = []
 
-        logs_by_day: dict[date, list[AttendanceLog]] = {}
+        latest_logs: dict[tuple[str, date], AttendanceLog] = {}
         for log in logs:
+            if not log.employee_id:
+                continue
+            log_key = (str(log.employee_id), log.attendance_date)
+            existing_log = latest_logs.get(log_key)
+            if existing_log is None or (log.updated_at, log.created_at) >= (existing_log.updated_at, existing_log.created_at):
+                latest_logs[log_key] = log
+
+        logs_by_day: dict[date, list[AttendanceLog]] = {}
+        for log in latest_logs.values():
             logs_by_day.setdefault(log.attendance_date, []).append(log)
 
         leave_map: dict[date, set[str]] = {}
-        for leave_request in approved_recent_leaves:
+        for leave_request in recent_leaves:
+            if leave_request.status in {LeaveRequestStatus.REJECTED.value, LeaveRequestStatus.CANCELLED.value}:
+                continue
             for leave_day in DashboardService._daterange(leave_request.start_date, leave_request.end_date):
                 if leave_day > today:
                     break
@@ -234,16 +244,20 @@ class DashboardService:
         for target_date in DashboardService._daterange(start_date, today):
             labels.append(target_date.strftime("%d %b"))
             day_logs = logs_by_day.get(target_date, [])
+            leave_ids = leave_map.get(target_date, set()) & active_employee_set
             present_ids = {
                 str(log.employee_id)
                 for log in day_logs
-                if log.status in [AttendanceStatus.PRESENT.value, AttendanceStatus.HALF_DAY.value]
-            }
-            leave_ids = leave_map.get(target_date, set())
-            absent_count = max(len(active_employee_set - present_ids - leave_ids), 0)
+                if log.check_in_at or log.status in [AttendanceStatus.PRESENT.value, AttendanceStatus.HALF_DAY.value, "online", "offline"]
+            } - leave_ids
+            absent_ids = {
+                str(log.employee_id)
+                for log in day_logs
+                if log.status == AttendanceStatus.ABSENT.value
+            } - leave_ids - present_ids
             present_series.append(len(present_ids))
             leave_series.append(len(leave_ids))
-            absent_series.append(absent_count)
+            absent_series.append(len(absent_ids))
 
         return {
             "labels": labels,
@@ -277,6 +291,24 @@ class DashboardService:
                 }
             )
 
+        calendar_events = db.execute(
+            select(CalendarEvent)
+            .where(CalendarEvent.event_date >= today)
+            .order_by(CalendarEvent.event_date.asc(), CalendarEvent.event_time.asc(), CalendarEvent.title.asc())
+            .limit(6)
+        ).scalars().all()
+        for calendar_event in calendar_events:
+            event_time = calendar_event.event_time or "All day"
+            events.append(
+                {
+                    "title": calendar_event.title,
+                    "date": calendar_event.event_date,
+                    "time": event_time,
+                    "type": calendar_event.event_type,
+                    "subtitle": calendar_event.description or calendar_event.event_type.replace("_", " ").title(),
+                }
+            )
+
         if pending_approvals:
             events.append(
                 {
@@ -306,114 +338,37 @@ class DashboardService:
         return events[:4]
 
     @staticmethod
-    def _kpi_table_rows(today: date) -> list[dict[str, object]]:
-        next_day = today + timedelta(days=1)
-        two_days_out = today + timedelta(days=2)
+    def _today_attendance_counts(db: Session, auth: AuthContext, *, active_count: int, today: date) -> dict[str, int | float]:
+        attendance_response = AttendanceService.list_attendance(db, auth, start_date=today, end_date=today)
+        attendance_items = attendance_response.get("items", [])
 
-        return [
-            {
-                "scope_label": "Engineering",
-                "total_employees": 184,
-                "active_employees": 176,
-                "inactive_employees": 8,
-                "attendance_percentage": 94.9,
-                "late_comers_count": 11,
-                "absent_count": 3,
-                "working_hours_display": "8.6 hrs avg",
-                "leave_usage_display": "42 days",
-                "pending_leave_approvals": 6,
-                "payroll_pending_tasks": 5,
-                "employees_on_leave_today": 6,
-                "total_salary_expense_display": "INR 1.68 Cr",
-                "pending_payments": 18,
-                "meeting_event": f"{today.strftime('%d %b')}, 4:30 PM - Sprint review",
-            },
-            {
-                "scope_label": "Product",
-                "total_employees": 62,
-                "active_employees": 59,
-                "inactive_employees": 3,
-                "attendance_percentage": 93.2,
-                "late_comers_count": 4,
-                "absent_count": 2,
-                "working_hours_display": "8.2 hrs avg",
-                "leave_usage_display": "15 days",
-                "pending_leave_approvals": 2,
-                "payroll_pending_tasks": 1,
-                "employees_on_leave_today": 2,
-                "total_salary_expense_display": "INR 58.20 L",
-                "pending_payments": 5,
-                "meeting_event": f"{today.strftime('%d %b')}, 11:00 AM - Roadmap sync",
-            },
-            {
-                "scope_label": "Sales",
-                "total_employees": 97,
-                "active_employees": 91,
-                "inactive_employees": 6,
-                "attendance_percentage": 90.1,
-                "late_comers_count": 9,
-                "absent_count": 5,
-                "working_hours_display": "7.9 hrs avg",
-                "leave_usage_display": "21 days",
-                "pending_leave_approvals": 3,
-                "payroll_pending_tasks": 4,
-                "employees_on_leave_today": 4,
-                "total_salary_expense_display": "INR 74.80 L",
-                "pending_payments": 11,
-                "meeting_event": f"{today.strftime('%d %b')}, 3:00 PM - Regional pipeline review",
-            },
-            {
-                "scope_label": "Human Resources",
-                "total_employees": 54,
-                "active_employees": 52,
-                "inactive_employees": 2,
-                "attendance_percentage": 94.2,
-                "late_comers_count": 2,
-                "absent_count": 2,
-                "working_hours_display": "8.1 hrs avg",
-                "leave_usage_display": "9 days",
-                "pending_leave_approvals": 8,
-                "payroll_pending_tasks": 2,
-                "employees_on_leave_today": 1,
-                "total_salary_expense_display": "INR 36.50 L",
-                "pending_payments": 3,
-                "meeting_event": f"{next_day.strftime('%d %b')}, 2:00 PM - Hiring calibration",
-            },
-            {
-                "scope_label": "Finance",
-                "total_employees": 51,
-                "active_employees": 49,
-                "inactive_employees": 2,
-                "attendance_percentage": 93.9,
-                "late_comers_count": 1,
-                "absent_count": 2,
-                "working_hours_display": "8.4 hrs avg",
-                "leave_usage_display": "7 days",
-                "pending_leave_approvals": 1,
-                "payroll_pending_tasks": 7,
-                "employees_on_leave_today": 1,
-                "total_salary_expense_display": "INR 44.90 L",
-                "pending_payments": 9,
-                "meeting_event": f"{two_days_out.strftime('%d %b')}, 5:00 PM - Month-end close prep",
-            },
-            {
-                "scope_label": "Operations",
-                "total_employees": 73,
-                "active_employees": 69,
-                "inactive_employees": 4,
-                "attendance_percentage": 89.9,
-                "late_comers_count": 5,
-                "absent_count": 4,
-                "working_hours_display": "8.0 hrs avg",
-                "leave_usage_display": "18 days",
-                "pending_leave_approvals": 2,
-                "payroll_pending_tasks": 3,
-                "employees_on_leave_today": 3,
-                "total_salary_expense_display": "INR 47.30 L",
-                "pending_payments": 6,
-                "meeting_event": f"{today.strftime('%d %b')}, 10:30 AM - Facilities audit standup",
-            },
-        ]
+        late_count = sum(
+            1
+            for item in attendance_items
+            if item.get("status") == AttendanceStatus.PRESENT.value and item.get("is_late")
+        )
+        half_day_count = sum(1 for item in attendance_items if item.get("status") == AttendanceStatus.HALF_DAY.value)
+        absent_count = sum(1 for item in attendance_items if item.get("status") == AttendanceStatus.ABSENT.value)
+        present_record_count = sum(
+            1
+            for item in attendance_items
+            if item.get("status") == AttendanceStatus.PRESENT.value and not item.get("is_late")
+        )
+        leave_count = sum(1 for item in attendance_items if item.get("status") == AttendanceStatus.LEAVE.value)
+        non_present_count = late_count + half_day_count + absent_count
+        present_count = max(active_count - non_present_count, present_record_count)
+        attended_count = present_count + late_count + half_day_count
+        attendance_percentage = round((attended_count / active_count) * 100, 1) if active_count else 0.0
+
+        return {
+            "present": present_count,
+            "late": late_count,
+            "half_day": half_day_count,
+            "absent": absent_count,
+            "leave": leave_count,
+            "attended": attended_count,
+            "attendance_percentage": attendance_percentage,
+        }
 
     @staticmethod
     def summary(db: Session, auth: AuthContext) -> dict[str, object]:
@@ -423,48 +378,19 @@ class DashboardService:
 
         active_employees = [employee for employee in employees if employee.status == "active"]
         inactive_employees = [employee for employee in employees if employee.status != "active"]
+        employee_ids = [str(item.id) for item in employees]
         active_employee_ids = [str(item.id) for item in active_employees]
         total_employee_count = len(employees)
         active_count = len(active_employees)
         inactive_count = len(inactive_employees)
 
-        today_logs = DashboardService._attendance_logs_in_range(db, employee_ids=active_employee_ids, start_date=today, end_date=today)
-        present_log_ids = {
-            str(log.employee_id)
-            for log in today_logs
-            if log.status == AttendanceStatus.PRESENT.value and not log.is_late
-        }
-        late_ids = {
-            str(log.employee_id)
-            for log in today_logs
-            if log.status == AttendanceStatus.PRESENT.value and log.is_late
-        }
-        absent_ids = {
-            str(log.employee_id)
-            for log in today_logs
-            if log.status == AttendanceStatus.ABSENT.value
-        }
-        half_day_ids = {
-            str(log.employee_id)
-            for log in today_logs
-            if log.status == AttendanceStatus.HALF_DAY.value
-        }
-        late_comers_count = len(late_ids)
-
-        leave_today_requests = DashboardService._leave_requests_in_scope(
-            db,
-            employee_ids=active_employee_ids,
-            start_date=today,
-            end_date=today,
-            status_value=LeaveRequestStatus.APPROVED.value,
-        )
-        leave_today_ids = {str(item.employee_id) for item in leave_today_requests}
-        employees_on_leave_today = len(leave_today_ids)
-        absent_count = len(absent_ids)
-        half_day_count = len(half_day_ids)
-        present_today_count = max(active_count - late_comers_count - absent_count - half_day_count, len(present_log_ids))
-        attended_count = present_today_count + late_comers_count + half_day_count
-        attendance_percentage = round((attended_count / active_count) * 100, 1) if active_count else 0.0
+        attendance_counts = DashboardService._today_attendance_counts(db, auth, active_count=active_count, today=today)
+        present_today_count = int(attendance_counts["present"])
+        late_comers_count = int(attendance_counts["late"])
+        half_day_count = int(attendance_counts["half_day"])
+        absent_count = int(attendance_counts["absent"])
+        attended_count = int(attendance_counts["attended"])
+        attendance_percentage = float(attendance_counts["attendance_percentage"])
 
         pending_approvals = DashboardService._leave_requests_in_scope(
             db,
@@ -473,25 +399,19 @@ class DashboardService:
         )
         pending_leave_approvals = len(pending_approvals)
 
-        current_period_start = today.replace(day=1)
-        current_period_end = DashboardService._shift_month(current_period_start, 1) - timedelta(days=1)
-        active_salary_structures = DashboardService._current_period_salary_structure_map(
+        payroll_summary = PayrollService.dashboard_summary(
             db,
+            auth,
             employee_ids=active_employee_ids,
-            period_start=current_period_start,
-            period_end=current_period_end,
+            month=today.month,
+            year=today.year,
         )
-        payroll_pending_tasks = max(active_count - len(active_salary_structures), 0)
-
-        current_payroll_run = db.execute(
-            select(PayrollRun).where(PayrollRun.period_month == today.month, PayrollRun.period_year == today.year)
-        ).scalar_one_or_none()
-        current_payslips = db.execute(
-            select(Payslip).where(Payslip.payroll_run_id == current_payroll_run.id)
-        ).scalars().all() if current_payroll_run is not None else []
-        current_payslip_employee_ids = {str(item.employee_id) for item in current_payslips}
-        pending_payments = max(active_count - len(current_payslip_employee_ids), 0)
-        total_salary_expense = sum((Decimal(str(item.net_salary)) for item in current_payslips), Decimal("0"))
+        payroll_pending_tasks = int(payroll_summary["payroll_pending_tasks"])
+        pending_payments = int(payroll_summary["pending_payslips"])
+        total_income = Decimal(str(payroll_summary["total_income"]))
+        total_expense = Decimal(str(payroll_summary["total_expense"]))
+        payroll_page_summary = PayrollService.get_transaction_summary(db, auth)
+        total_salary = Decimal(str(payroll_page_summary["total_salary"]))
 
         monthly_report = ReportService.monthly_attendance_report(db, auth, month=today.month, year=today.year)
 
@@ -508,12 +428,11 @@ class DashboardService:
             start_date=trend_start_date,
             end_date=today,
         )
-        trend_approved_leaves = DashboardService._leave_requests_in_scope(
+        trend_recent_leaves = DashboardService._leave_requests_in_scope(
             db,
             employee_ids=active_employee_ids,
             start_date=trend_start_date,
             end_date=today,
-            status_value=LeaveRequestStatus.APPROVED.value,
         )
 
         upcoming_events = DashboardService._upcoming_events(
@@ -582,20 +501,29 @@ class DashboardService:
                 "accent": "orange",
             },
             {
-                "key": "payroll_pending_tasks",
-                "label": "Payroll Pending Tasks",
-                "value": payroll_pending_tasks,
-                "display_value": str(payroll_pending_tasks),
-                "helper": "Employees missing current salary setup",
-                "accent": "cyan",
+                "key": "payroll_total_income",
+                "label": "Payroll Total Income",
+                "value": float(total_income),
+                "display_value": DashboardService._format_currency(total_income),
+                "helper": "From payroll income transactions",
+                "accent": "green",
             },
             {
-                "key": "total_salary_expense_month",
-                "label": "Total Salary Expense (This Month)",
-                "value": float(total_salary_expense),
-                "display_value": DashboardService._format_currency(total_salary_expense),
-                "helper": current_payroll_run.status.replace("_", " ").title() if current_payroll_run else "Current month payroll not processed",
+                "key": "payroll_total_expense",
+                "label": "Payroll Total Expense",
+                "value": float(total_expense),
+                "display_value": DashboardService._format_currency(total_expense),
+                "helper": "From payroll expense transactions",
+                "accent": "red",
+            },
+            {
+                "key": "total_salary_processed_month",
+                "label": "Total Salary Processed",
+                "value": float(total_salary),
+                "display_value": DashboardService._format_currency(total_salary),
+                "helper": "From payroll salary transactions",
                 "accent": "emerald",
+                "target_url": "/payroll",
             },
             {
                 "key": "pending_payments",
@@ -611,19 +539,20 @@ class DashboardService:
             "cards": cards,
             "charts": {
                 "working_hours": DashboardService._working_hours_analysis(active_employee_ids, recent_logs, today),
-                "leave_usage": DashboardService._leave_usage_analysis(db, active_employee_ids=active_employee_ids, today=today),
+                "leave_usage": DashboardService._leave_usage_analysis(db, employee_ids=employee_ids, today=today),
                 "attendance_trend": DashboardService._attendance_trend(
                     active_employee_ids,
                     trend_logs,
-                    trend_approved_leaves,
+                    trend_recent_leaves,
                     today,
                     days=30,
                 ),
             },
             "meta": {
                 "upcoming_events_count": len(upcoming_events),
+                "payroll_summary": payroll_summary,
             },
             "monthly_attendance_preview": monthly_report["items"][:5],
-            "kpi_table_rows": DashboardService._kpi_table_rows(today),
+            "kpi_table_rows": [],
             "upcoming_events": upcoming_events,
         }

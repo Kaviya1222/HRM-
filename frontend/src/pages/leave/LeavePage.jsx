@@ -12,6 +12,19 @@ import useAuth from "../../hooks/useAuth";
 
 const EMPLOYEE_DIRECTORY_UPDATED_EVENT = "hrm:employees-updated";
 const EMPLOYEE_DIRECTORY_UPDATED_AT_KEY = "hrm:employees-updated-at";
+const LEAVE_UPDATED_EVENT = "hrm:leave-updated";
+const LEAVE_UPDATED_AT_KEY = "hrm:leave-updated-at";
+
+function notifyLeaveUpdated() {
+  const updatedAt = String(Date.now());
+  window.dispatchEvent(new CustomEvent(LEAVE_UPDATED_EVENT, { detail: { updatedAt } }));
+
+  try {
+    window.localStorage.setItem(LEAVE_UPDATED_AT_KEY, updatedAt);
+  } catch {
+    // Ignore storage errors and rely on the in-tab event.
+  }
+}
 
 function createEmptyLeaveForm() {
   return {
@@ -74,7 +87,7 @@ function LeavePage() {
 
   const canApply = hasPermission("leave.apply");
   const canApprove = hasPermission("leave.approve") || hasPermission("leave.recommend");
-  const canShowApplyLeave = canApply;
+  const canShowApplyLeave = canApply && !user?.is_super_admin;
 
   const requestStats = useMemo(() => {
     const pending = allRequests.filter((item) => item.status === "pending").length;
@@ -225,6 +238,7 @@ function LeavePage() {
       setIsApplyModalOpen(false);
       setFeedback({ type: "success", message: "Leave request submitted successfully." });
       await loadData({ silent: true });
+      notifyLeaveUpdated();
     } catch (error) {
       setFeedback({
         type: "error",
@@ -239,9 +253,13 @@ function LeavePage() {
     setDecisionInFlightId(requestId);
     setFeedback({ type: "", message: "" });
     try {
-      await decideLeave(requestId, { decision, remarks });
-      setFeedback({ type: "success", message: `Leave request ${decision} successfully.` });
+      const response = await decideLeave(requestId, { decision, remarks });
+      setFeedback({
+        type: response.email_sent === false ? "error" : "success",
+        message: response.message || `Leave request ${decision} successfully.`,
+      });
       await loadData({ silent: true });
+      notifyLeaveUpdated();
       return true;
     } catch (error) {
       setFeedback({

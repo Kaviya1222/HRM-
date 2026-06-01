@@ -12,6 +12,7 @@ import {
   Tooltip,
 } from "chart.js";
 import { Bar, Doughnut, Line } from "react-chartjs-2";
+import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   Banknote,
@@ -49,12 +50,24 @@ const METRIC_ICON_MAP = {
   employees_on_leave_today: CalendarClock,
   pending_leave_approvals: Bell,
   payroll_pending_tasks: Wallet,
+  payroll_total_income: Banknote,
+  payroll_total_expense: Wallet,
+  payroll_total_balance: Wallet,
   total_salary_expense_month: Banknote,
+  total_salary_processed_month: Banknote,
+  employees_missing_salary_setup: Users,
+  current_month_payroll_status: Wallet,
   pending_payments: Wallet,
 };
 
 const ATTENDANCE_UPDATED_EVENT = "hrm:attendance-updated";
 const ATTENDANCE_UPDATED_AT_KEY = "hrm:attendance-updated-at";
+const PAYROLL_UPDATED_EVENT = "hrm:payroll-updated";
+const PAYROLL_UPDATED_AT_KEY = "hrm:payroll-updated-at";
+const CALENDAR_UPDATED_EVENT = "hrm:calendar-updated";
+const CALENDAR_UPDATED_AT_KEY = "hrm:calendar-updated-at";
+const LEAVE_UPDATED_EVENT = "hrm:leave-updated";
+const LEAVE_UPDATED_AT_KEY = "hrm:leave-updated-at";
 
 const EMPTY_SUMMARY = {
   cards: [],
@@ -132,6 +145,17 @@ function formatEventDate(value) {
   };
 }
 
+function formatDisplayDate(value) {
+  if (!value) {
+    return "-";
+  }
+  return new Date(value).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 function formatDuration(totalSeconds) {
   const safeSeconds = Math.max(Number(totalSeconds) || 0, 0);
   const hours = Math.floor(safeSeconds / 3600);
@@ -175,6 +199,7 @@ function getCompletedWorkedSeconds(log) {
 
 function DashboardPage() {
   const { hasPermission } = useAuth();
+  const navigate = useNavigate();
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [todayAttendance, setTodayAttendance] = useState({ status: "absent", log: null, can_check_in: false, can_check_out: false });
   const [isLoading, setIsLoading] = useState(true);
@@ -270,17 +295,23 @@ function DashboardPage() {
     }
 
     function handleStorage(event) {
-      if (event.key === ATTENDANCE_UPDATED_AT_KEY) {
+      if ([ATTENDANCE_UPDATED_AT_KEY, PAYROLL_UPDATED_AT_KEY, CALENDAR_UPDATED_AT_KEY, LEAVE_UPDATED_AT_KEY].includes(event.key)) {
         refreshDashboardSummary();
       }
     }
 
     window.addEventListener(ATTENDANCE_UPDATED_EVENT, refreshDashboardSummary);
+    window.addEventListener(PAYROLL_UPDATED_EVENT, refreshDashboardSummary);
+    window.addEventListener(CALENDAR_UPDATED_EVENT, refreshDashboardSummary);
+    window.addEventListener(LEAVE_UPDATED_EVENT, refreshDashboardSummary);
     window.addEventListener("storage", handleStorage);
     window.addEventListener("focus", refreshDashboardSummary);
 
     return () => {
       window.removeEventListener(ATTENDANCE_UPDATED_EVENT, refreshDashboardSummary);
+      window.removeEventListener(PAYROLL_UPDATED_EVENT, refreshDashboardSummary);
+      window.removeEventListener(CALENDAR_UPDATED_EVENT, refreshDashboardSummary);
+      window.removeEventListener(LEAVE_UPDATED_EVENT, refreshDashboardSummary);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("focus", refreshDashboardSummary);
     };
@@ -345,16 +376,8 @@ function DashboardPage() {
       setTodayAttendance((current) => ({
         ...current,
         status: response.log?.status || "present",
-        log: response.log
-          ? {
-            ...response.log,
-            sessions: [
-              ...(Array.isArray(current.log?.sessions) ? current.log.sessions.filter((session) => session?.check_out_at) : []),
-              ...(Array.isArray(response.log.sessions) ? response.log.sessions : [response.log]),
-            ],
-          }
-          : current.log,
-        can_check_in: false,
+        log: response.log || current.log,
+        can_check_in: hasCheckedOut,
         can_check_out: !hasCheckedOut,
       }));
       if (hasCheckedOut) {
@@ -418,7 +441,7 @@ function DashboardPage() {
           check_out_at: formatLocalDateTime(checkOutAt),
         }
         : current.log,
-      can_check_in: false,
+      can_check_in: true,
       can_check_out: false,
     }));
     setIsTimerRunning(false);
@@ -437,20 +460,8 @@ function DashboardPage() {
       setTodayAttendance((current) => ({
         ...current,
         status: response.log?.status || current.status,
-        log: response.log
-          ? {
-            ...response.log,
-            work_seconds: nextCompletedSeconds,
-            work_minutes: Math.floor(nextCompletedSeconds / 60),
-            sessions: [
-              ...(Array.isArray(current.log?.sessions)
-                ? current.log.sessions.filter((session) => session?.id !== response.log.id)
-                : []),
-              ...(Array.isArray(response.log.sessions) ? response.log.sessions : [response.log]),
-            ],
-          }
-          : current.log,
-        can_check_in: false,
+        log: response.log || current.log,
+        can_check_in: true,
         can_check_out: false,
       }));
       setElapsedSeconds(nextCompletedSeconds);
@@ -646,8 +657,21 @@ function DashboardPage() {
       <section className="dashboard-metrics-grid">
         {summary.cards.map((card) => {
           const Icon = METRIC_ICON_MAP[card.key] || Users;
+          const isLinkedCard = Boolean(card.target_url);
           return (
-            <article className={`dashboard-metric-card dashboard-metric-card--${card.accent || "blue"}`} key={card.key}>
+            <article
+              className={`dashboard-metric-card dashboard-metric-card--${card.accent || "blue"}`}
+              key={card.key}
+              onClick={isLinkedCard ? () => navigate(card.target_url) : undefined}
+              onKeyDown={isLinkedCard ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  navigate(card.target_url);
+                }
+              } : undefined}
+              role={isLinkedCard ? "link" : undefined}
+              tabIndex={isLinkedCard ? 0 : undefined}
+            >
               <div className="dashboard-metric-icon">
                 <Icon size={20} />
               </div>
@@ -775,6 +799,7 @@ function DashboardPage() {
             )}
           </div>
         </article>
+
       </section>
 
     </div>

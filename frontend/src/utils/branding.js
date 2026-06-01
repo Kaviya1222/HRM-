@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "../api/client";
+
 export const BRANDING_STORAGE_KEY = "hrm.branding";
 
 export const DEFAULT_BRANDING = {
@@ -5,7 +7,20 @@ export const DEFAULT_BRANDING = {
   tagline: "Workforce Portal",
   logoText: "HRM",
   logoDataUrl: "",
+  logoUrl: "",
 };
+
+function resolveLogoUrl(value) {
+  const rawValue = safeString(value);
+  if (!rawValue || rawValue.startsWith("data:") || /^https?:\/\//i.test(rawValue)) {
+    return rawValue;
+  }
+  if (rawValue.startsWith("/")) {
+    const apiRoot = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
+    return `${apiRoot}${rawValue}`;
+  }
+  return rawValue;
+}
 
 function safeString(value, fallback = "", { allowEmpty = false } = {}) {
   if (typeof value !== "string") {
@@ -31,13 +46,15 @@ export function normalizeBranding(source = {}) {
   )
     .slice(0, 4)
     .toUpperCase();
-  const logoDataUrl = safeString(source.logoDataUrl ?? source.logo_data_url);
+  const logoUrl = resolveLogoUrl(source.logoUrl ?? source.logo_url ?? source.logo_path ?? source.url);
+  const logoDataUrl = resolveLogoUrl(source.logoDataUrl ?? source.logo_data_url ?? logoUrl);
 
   return {
     organizationName,
     tagline,
     logoText,
     logoDataUrl,
+    logoUrl,
   };
 }
 
@@ -71,6 +88,7 @@ export function extractBrandingFromSettings(settings = []) {
     tagline: settingMap["branding.portal_tagline"]?.text,
     logoText: settingMap["branding.logo"]?.text,
     logoDataUrl: settingMap["branding.logo"]?.data_url,
+    logoUrl: settingMap["branding.logo"]?.url ?? settingMap["branding.logo"]?.path,
   });
 }
 
@@ -104,7 +122,8 @@ export function buildBrandingSettingItems(branding) {
       value_type: "json",
       value_json: {
         text: normalized.logoText,
-        data_url: normalized.logoDataUrl || null,
+        data_url: normalized.logoDataUrl?.startsWith("data:") ? normalized.logoDataUrl : null,
+        url: normalized.logoUrl || (normalized.logoDataUrl?.startsWith("data:") ? null : normalized.logoDataUrl || null),
       },
       is_public: true,
     },

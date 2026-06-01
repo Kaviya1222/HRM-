@@ -38,3 +38,14 @@ export async function saveAppSettings(items) {
   });
   return response.data;
 }
+
+export async function uploadBrandingLogo(file) {
+  const formData = new FormData();
+  formData.append("logo", file);
+  const response = await apiClient.post("/settings/branding/logo", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+  return response.data;
+}

@@ -113,7 +113,10 @@ export function AuthProvider({ children }) {
 
   async function login(credentials) {
     const response = await loginRequest(credentials);
-    setSessionTokens(response);
+    if (response.requires_password_change) {
+      return response;
+    }
+    setSessionTokens(response, credentials.remember !== false);
     setUser(response.user);
     return response;
   }

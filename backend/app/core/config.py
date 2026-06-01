@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     tracker_shared_token: str = "tracker-dev-token"
     initial_super_admin_email: EmailStr = "superadmin@hrm.local"
     initial_super_admin_password: str = "SuperAdmin@123"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str = "HRM"
+    smtp_use_tls: bool = True
+    smtp_timeout_seconds: int = 15
 
     model_config = SettingsConfigDict(
         env_file=(ROOT_DIR / ".env", ".env"),

@@ -651,7 +651,7 @@ LeaveRequestStatus: PENDING, APPROVED, REJECTED, CANCELLED
 PayrollRunStatus: DRAFT, PROCESSING, COMPLETED
 ```
 
-### Device & Tracker Status
+### Device & Tracker Status1
 ```python
 DeviceStatus: ACTIVE, INACTIVE
 TrackerSessionStatus: ACTIVE, CLOSED

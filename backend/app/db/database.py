@@ -113,6 +113,98 @@ def ensure_notification_runtime_schema(engine) -> None:
             connection.execute(text("ALTER TABLE notifications ADD COLUMN target_url VARCHAR(180) NULL AFTER related_id"))
 
 
+def ensure_payroll_runtime_schema(engine) -> None:
+    if not engine.dialect.name.startswith("mysql"):
+        return
+
+    with engine.begin() as connection:
+        columns = {
+            row["Field"]
+            for row in connection.execute(text("SHOW COLUMNS FROM payslips")).mappings()
+        }
+        additions = [
+            ("monthly_salary", "ALTER TABLE payslips ADD COLUMN monthly_salary DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER employee_id"),
+            ("total_days", "ALTER TABLE payslips ADD COLUMN total_days INT NOT NULL DEFAULT 30 AFTER monthly_salary"),
+            ("worked_days", "ALTER TABLE payslips ADD COLUMN worked_days DECIMAL(8, 2) NOT NULL DEFAULT 0 AFTER total_days"),
+            ("per_day_salary", "ALTER TABLE payslips ADD COLUMN per_day_salary DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER worked_days"),
+            ("basic", "ALTER TABLE payslips ADD COLUMN basic DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER per_day_salary"),
+            ("hra", "ALTER TABLE payslips ADD COLUMN hra DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER basic"),
+            ("special_allowance", "ALTER TABLE payslips ADD COLUMN special_allowance DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER hra"),
+            ("transport", "ALTER TABLE payslips ADD COLUMN transport DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER special_allowance"),
+            ("medical", "ALTER TABLE payslips ADD COLUMN medical DECIMAL(12, 2) NOT NULL DEFAULT 0 AFTER transport"),
+        ]
+        for column_name, ddl in additions:
+            if column_name not in columns:
+                connection.execute(text(ddl))
+
+        transaction_columns = {
+            row["Field"]
+            for row in connection.execute(text("SHOW COLUMNS FROM payroll_transactions")).mappings()
+        }
+        if "employee_name" not in transaction_columns:
+            connection.execute(text("ALTER TABLE payroll_transactions ADD COLUMN employee_name VARCHAR(160) NULL AFTER employee_id"))
+
+        tables = {
+            row[0]
+            for row in connection.execute(text("SHOW TABLES")).all()
+        }
+        if "salary_profiles" not in tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE salary_profiles ("
+                    "id CHAR(32) NOT NULL, "
+                    "employee_id CHAR(32) NOT NULL, "
+                    "date_joined DATE NULL, "
+                    "department VARCHAR(120) NULL, "
+                    "sub_department VARCHAR(120) NULL, "
+                    "designation VARCHAR(120) NULL, "
+                    "payment_mode VARCHAR(80) NULL, "
+                    "bank VARCHAR(120) NULL, "
+                    "bank_ifsc VARCHAR(40) NULL, "
+                    "bank_account_number VARCHAR(80) NULL, "
+                    "uan VARCHAR(80) NULL, "
+                    "pf_number VARCHAR(80) NULL, "
+                    "pan_number VARCHAR(40) NULL, "
+                    "actual_payable_days DECIMAL(8, 2) NULL, "
+                    "total_working_days DECIMAL(8, 2) NULL, "
+                    "loss_of_pay DECIMAL(8, 2) NULL, "
+                    "present_days DECIMAL(8, 2) NULL, "
+                    "salary_amount DECIMAL(12, 2) NULL, "
+                    "salary_transaction_id CHAR(32) NULL, "
+                    "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                    "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                    "PRIMARY KEY (id), "
+                    "CONSTRAINT uq_salary_profiles_employee UNIQUE (employee_id), "
+                    "CONSTRAINT fk_salary_profiles_employee_id_employees FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE"
+                    ")"
+                )
+            )
+            connection.execute(text("CREATE INDEX ix_salary_profiles_employee_id ON salary_profiles (employee_id)"))
+            connection.execute(text("CREATE INDEX ix_salary_profiles_salary_transaction_id ON salary_profiles (salary_transaction_id)"))
+        else:
+            salary_profile_columns = {
+                row["Field"]
+                for row in connection.execute(text("SHOW COLUMNS FROM salary_profiles")).mappings()
+            }
+            profile_additions = [
+                ("total_working_days", "ALTER TABLE salary_profiles ADD COLUMN total_working_days DECIMAL(8, 2) NULL AFTER pan_number"),
+                ("actual_payable_days", "ALTER TABLE salary_profiles ADD COLUMN actual_payable_days DECIMAL(8, 2) NULL AFTER pan_number"),
+                ("loss_of_pay", "ALTER TABLE salary_profiles ADD COLUMN loss_of_pay DECIMAL(8, 2) NULL AFTER total_working_days"),
+                ("present_days", "ALTER TABLE salary_profiles ADD COLUMN present_days DECIMAL(8, 2) NULL AFTER loss_of_pay"),
+                ("salary_amount", "ALTER TABLE salary_profiles ADD COLUMN salary_amount DECIMAL(12, 2) NULL AFTER present_days"),
+                ("salary_transaction_id", "ALTER TABLE salary_profiles ADD COLUMN salary_transaction_id CHAR(32) NULL AFTER salary_amount"),
+            ]
+            for column_name, ddl in profile_additions:
+                if column_name not in salary_profile_columns:
+                    connection.execute(text(ddl))
+            indexes = {
+                row["Key_name"]
+                for row in connection.execute(text("SHOW INDEX FROM salary_profiles")).mappings()
+            }
+            if "ix_salary_profiles_salary_transaction_id" not in indexes:
+                connection.execute(text("CREATE INDEX ix_salary_profiles_salary_transaction_id ON salary_profiles (salary_transaction_id)"))
+
+
 def ensure_tracker_runtime_schema(engine) -> None:
     if not engine.dialect.name.startswith("mysql"):
         return

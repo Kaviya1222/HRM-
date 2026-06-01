@@ -10,6 +10,11 @@ export async function createCalendarEvent(payload) {
   return response.data;
 }
 
+export async function fetchCalendarEmployeeOptions() {
+  const response = await apiClient.get("/calendar/employee-options");
+  return response.data;
+}
+
 export async function updateCalendarEvent(eventId, payload) {
   const response = await apiClient.put(`/calendar/events/${eventId}`, payload);
   return response.data;
@@ -19,4 +24,3 @@ export async function deleteCalendarEvent(eventId) {
   const response = await apiClient.delete(`/calendar/events/${eventId}`);
   return response.data;
 }
-

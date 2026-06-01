@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import AppLayout from "../layouts/AppLayout";
 import AttendancePage from "../pages/attendance/AttendancePage";
 import CalendarPage from "../pages/calendar/CalendarPage";
@@ -24,6 +24,33 @@ function AppRouter() {
           <Route element={<AppLayout />}>
             <Route
               index
+              element={(
+                <ProtectedRoute permission="page.dashboard.view">
+                  <DashboardPage />
+                </ProtectedRoute>
+              )}
+            />
+
+            <Route
+              path="/admin-dashboard"
+              element={(
+                <ProtectedRoute permission="page.dashboard.view">
+                  <DashboardPage />
+                </ProtectedRoute>
+              )}
+            />
+
+            <Route
+              path="/hr-dashboard"
+              element={(
+                <ProtectedRoute permission="page.dashboard.view">
+                  <DashboardPage />
+                </ProtectedRoute>
+              )}
+            />
+
+            <Route
+              path="/employee-dashboard"
               element={(
                 <ProtectedRoute permission="page.dashboard.view">
                   <DashboardPage />
@@ -97,13 +124,14 @@ function AppRouter() {
             <Route
               path="/settings"
               element={
-                <ProtectedRoute permission="page.settings.view" superAdminOnly>
+                <ProtectedRoute permission="page.settings.view">
                   <SuperAdminSettingsPage />
                 </ProtectedRoute>
               }
             />
           </Route>
         </Route>
+        <Route path="*" element={<Navigate replace to="/" />} />
       </Routes>
     </BrowserRouter>
   );

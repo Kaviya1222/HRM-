@@ -52,6 +52,5 @@ export const navigationItems = [
     path: "/settings",
     permission: "menu.settings.view",
     icon: "Settings",
-    superAdminOnly: true,
   },
 ];

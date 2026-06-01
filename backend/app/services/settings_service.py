@@ -11,13 +11,15 @@ DEFAULT_BRANDING = {
     "tagline": "Workforce Portal",
     "logo_text": "HRM",
     "logo_data_url": None,
+    "logo_url": None,
 }
 
 
 class SettingsService:
     @staticmethod
     def list_app_settings(db: Session) -> list[AppSetting]:
-        return list(db.execute(select(AppSetting).order_by(AppSetting.category.asc(), AppSetting.key.asc())).scalars().all())
+        settings = list(db.execute(select(AppSetting)).scalars().all())
+        return sorted(settings, key=lambda item: (item.category, item.key))
 
     @staticmethod
     def get_setting_value(db: Session, key: str, default: object = None) -> object:
@@ -43,6 +45,17 @@ class SettingsService:
         return default
 
     @staticmethod
+    def get_boolean_setting(db: Session, key: str, nested_key: str, default: bool) -> bool:
+        value = SettingsService.get_setting_value(db, key, default=None)
+        if isinstance(value, dict):
+            nested_value = value.get(nested_key)
+            if isinstance(nested_value, bool):
+                return nested_value
+        if isinstance(value, bool):
+            return value
+        return default
+
+    @staticmethod
     def get_branding(db: Session) -> dict[str, object]:
         organization_setting = SettingsService.get_object_setting(
             db,
@@ -60,14 +73,18 @@ class SettingsService:
             {
                 "text": DEFAULT_BRANDING["logo_text"],
                 "data_url": DEFAULT_BRANDING["logo_data_url"],
+                "url": DEFAULT_BRANDING["logo_url"],
             },
         )
+        logo_url = logo_setting.get("url") or logo_setting.get("path") or DEFAULT_BRANDING["logo_url"]
+        logo_data_url = logo_setting.get("data_url") or logo_url or DEFAULT_BRANDING["logo_data_url"]
 
         return {
             "organization_name": str(organization_setting.get("text") or DEFAULT_BRANDING["organization_name"]),
             "tagline": str(tagline_setting.get("text") or DEFAULT_BRANDING["tagline"]),
             "logo_text": str(logo_setting.get("text") or DEFAULT_BRANDING["logo_text"]),
-            "logo_data_url": logo_setting.get("data_url") or DEFAULT_BRANDING["logo_data_url"],
+            "logo_data_url": logo_data_url,
+            "logo_url": logo_url,
         }
 
     @staticmethod

@@ -115,3 +115,4 @@ class BrandingSettings(BaseModel):
     tagline: str
     logo_text: str
     logo_data_url: str | None = None
+    logo_url: str | None = None
