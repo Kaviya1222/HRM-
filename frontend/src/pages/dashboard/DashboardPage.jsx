@@ -49,6 +49,9 @@ const METRIC_ICON_MAP = {
   half_day_count: CalendarClock,
   employees_on_leave_today: CalendarClock,
   pending_leave_approvals: Bell,
+  total_leaves: CalendarClock,
+  approved_leaves: CalendarCheck,
+  rejected_leaves: AlertTriangle,
   payroll_pending_tasks: Wallet,
   payroll_total_income: Banknote,
   payroll_total_expense: Wallet,
@@ -327,7 +330,9 @@ function DashboardPage() {
   const displayedWorkedSeconds = elapsedSeconds;
   const canCheckIn = hasPermission("attendance.check_in");
   const canCheckOut = hasPermission("attendance.check_out");
-  const canUseAttendanceAction = checkedIn ? canCheckOut : canCheckIn;
+  const canUseAttendanceAction = checkedIn
+    ? canCheckOut && todayAttendance.can_check_out
+    : canCheckIn && todayAttendance.can_check_in;
   const attendanceButtonLabel = checkedIn ? "Check Out" : "Check In";
   const attendanceButtonIcon = checkedIn ? <Clock3 size={14} /> : <CalendarCheck size={14} />;
   const isAttendanceButtonDisabled = isAttendanceActionLoading || !canUseAttendanceAction;
@@ -377,7 +382,7 @@ function DashboardPage() {
         ...current,
         status: response.log?.status || "present",
         log: response.log || current.log,
-        can_check_in: hasCheckedOut,
+        can_check_in: false,
         can_check_out: !hasCheckedOut,
       }));
       if (hasCheckedOut) {
@@ -441,7 +446,7 @@ function DashboardPage() {
           check_out_at: formatLocalDateTime(checkOutAt),
         }
         : current.log,
-      can_check_in: true,
+      can_check_in: false,
       can_check_out: false,
     }));
     setIsTimerRunning(false);
@@ -461,7 +466,7 @@ function DashboardPage() {
         ...current,
         status: response.log?.status || current.status,
         log: response.log || current.log,
-        can_check_in: true,
+        can_check_in: false,
         can_check_out: false,
       }));
       setElapsedSeconds(nextCompletedSeconds);

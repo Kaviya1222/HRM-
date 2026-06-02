@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     auto_bootstrap: bool = True
     seed_demo_data: bool = True
     tracker_shared_token: str = "tracker-dev-token"
-    initial_super_admin_email: EmailStr = "superadmin@hrm.local"
-    initial_super_admin_password: str = "SuperAdmin@123"
+    initial_super_admin_email: EmailStr = "superadmin@gmail.com"
+    initial_super_admin_password: str = "Superadmin@007"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

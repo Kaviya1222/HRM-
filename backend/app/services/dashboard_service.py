@@ -338,37 +338,8 @@ class DashboardService:
         return events[:4]
 
     @staticmethod
-    def _today_attendance_counts(db: Session, auth: AuthContext, *, active_count: int, today: date) -> dict[str, int | float]:
-        attendance_response = AttendanceService.list_attendance(db, auth, start_date=today, end_date=today)
-        attendance_items = attendance_response.get("items", [])
-
-        late_count = sum(
-            1
-            for item in attendance_items
-            if item.get("status") == AttendanceStatus.PRESENT.value and item.get("is_late")
-        )
-        half_day_count = sum(1 for item in attendance_items if item.get("status") == AttendanceStatus.HALF_DAY.value)
-        absent_count = sum(1 for item in attendance_items if item.get("status") == AttendanceStatus.ABSENT.value)
-        present_record_count = sum(
-            1
-            for item in attendance_items
-            if item.get("status") == AttendanceStatus.PRESENT.value and not item.get("is_late")
-        )
-        leave_count = sum(1 for item in attendance_items if item.get("status") == AttendanceStatus.LEAVE.value)
-        non_present_count = late_count + half_day_count + absent_count
-        present_count = max(active_count - non_present_count, present_record_count)
-        attended_count = present_count + late_count + half_day_count
-        attendance_percentage = round((attended_count / active_count) * 100, 1) if active_count else 0.0
-
-        return {
-            "present": present_count,
-            "late": late_count,
-            "half_day": half_day_count,
-            "absent": absent_count,
-            "leave": leave_count,
-            "attended": attended_count,
-            "attendance_percentage": attendance_percentage,
-        }
+    def _today_attendance_counts(db: Session, *, active_employee_ids: list[str], today: date) -> dict[str, int | float]:
+        return AttendanceService.calculate_today_statistics(db, active_employee_ids=active_employee_ids, today=today)
 
     @staticmethod
     def summary(db: Session, auth: AuthContext) -> dict[str, object]:
@@ -384,7 +355,7 @@ class DashboardService:
         active_count = len(active_employees)
         inactive_count = len(inactive_employees)
 
-        attendance_counts = DashboardService._today_attendance_counts(db, auth, active_count=active_count, today=today)
+        attendance_counts = DashboardService._today_attendance_counts(db, active_employee_ids=active_employee_ids, today=today)
         present_today_count = int(attendance_counts["present"])
         late_comers_count = int(attendance_counts["late"])
         half_day_count = int(attendance_counts["half_day"])
@@ -398,6 +369,11 @@ class DashboardService:
             status_value=LeaveRequestStatus.PENDING.value,
         )
         pending_leave_approvals = len(pending_approvals)
+        leave_requests = DashboardService._leave_requests_in_scope(db, employee_ids=[str(item.id) for item in employees])
+        total_leave_count = len(leave_requests)
+        approved_leave_count = sum(1 for item in leave_requests if item.status == LeaveRequestStatus.APPROVED.value)
+        rejected_leave_count = sum(1 for item in leave_requests if item.status == LeaveRequestStatus.REJECTED.value)
+        today_leave_count = int(attendance_counts["leave"])
 
         payroll_summary = PayrollService.dashboard_summary(
             db,
@@ -461,6 +437,14 @@ class DashboardService:
                 "accent": "amber",
             },
             {
+                "key": "employees_on_leave_today",
+                "label": "Today Leave",
+                "value": today_leave_count,
+                "display_value": str(today_leave_count).zfill(2),
+                "helper": "Marked leave today",
+                "accent": "violet",
+            },
+            {
                 "key": "absent_count",
                 "label": "Absent",
                 "value": absent_count,
@@ -494,11 +478,35 @@ class DashboardService:
             },
             {
                 "key": "pending_leave_approvals",
-                "label": "Pending Leave Approvals",
+                "label": "Pending Leaves",
                 "value": pending_leave_approvals,
                 "display_value": str(pending_leave_approvals),
                 "helper": "Requests waiting for action",
                 "accent": "orange",
+            },
+            {
+                "key": "total_leaves",
+                "label": "Total Leaves",
+                "value": total_leave_count,
+                "display_value": str(total_leave_count),
+                "helper": "Leave requests in database",
+                "accent": "blue",
+            },
+            {
+                "key": "approved_leaves",
+                "label": "Approved Leaves",
+                "value": approved_leave_count,
+                "display_value": str(approved_leave_count),
+                "helper": "Approved leave requests",
+                "accent": "green",
+            },
+            {
+                "key": "rejected_leaves",
+                "label": "Rejected Leaves",
+                "value": rejected_leave_count,
+                "display_value": str(rejected_leave_count),
+                "helper": "Rejected leave requests",
+                "accent": "red",
             },
             {
                 "key": "payroll_total_income",

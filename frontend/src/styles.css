@@ -3534,9 +3534,9 @@ button { cursor: pointer; background: none; border: none; }
 }
 
 /* Calendar Page */
-.calendar-page { gap: 20px; }
+.calendar-page { gap: 16px; }
 .calendar-shell {
-  padding: 20px;
+  padding: 16px;
   border-radius: 24px;
   overflow: hidden;
   background:
@@ -3549,9 +3549,9 @@ button { cursor: pointer; background: none; border: none; }
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
-  gap: 20px;
+  gap: 16px;
   align-items: stretch;
-  padding: 24px;
+  padding: 18px;
   border-radius: 22px;
   border: 1px solid rgba(255,255,255,.06);
   background:
@@ -3562,7 +3562,7 @@ button { cursor: pointer; background: none; border: none; }
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 .calendar-hero-date-trigger,
@@ -3621,7 +3621,7 @@ button { cursor: pointer; background: none; border: none; }
 }
 .calendar-hero-visual {
   position: relative;
-  min-height: 220px;
+  min-height: 154px;
   border-radius: 20px;
   overflow: hidden;
   border: 1px solid rgba(255,255,255,.06);
@@ -3635,15 +3635,15 @@ button { cursor: pointer; background: none; border: none; }
   filter: blur(2px);
 }
 .calendar-hero-orb--large {
-  width: 220px;
-  height: 220px;
-  top: -34px;
+  width: 168px;
+  height: 168px;
+  top: -28px;
   right: -30px;
   background: radial-gradient(circle, rgba(217,167,103,.36), rgba(217,167,103,.04) 68%, transparent 72%);
 }
 .calendar-hero-orb--small {
-  width: 140px;
-  height: 140px;
+  width: 108px;
+  height: 108px;
   left: 24px;
   bottom: 20px;
   background: radial-gradient(circle, rgba(59,130,246,.26), rgba(59,130,246,.05) 68%, transparent 72%);
@@ -3657,7 +3657,7 @@ button { cursor: pointer; background: none; border: none; }
   flex-direction: column;
   gap: 6px;
   width: min(210px, calc(100% - 48px));
-  padding: 18px;
+  padding: 16px;
   border-radius: 18px;
   border: 1px solid rgba(255,255,255,.08);
   background: rgba(12,18,30,.68);
@@ -3683,7 +3683,7 @@ button { cursor: pointer; background: none; border: none; }
 .calendar-toolbar {
   display: flex;
   justify-content: flex-end;
-  margin: 20px 0 16px;
+  margin: 14px 0 12px;
 }
 .calendar-board {
   padding: 16px;

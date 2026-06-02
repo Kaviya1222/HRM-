@@ -416,6 +416,99 @@ class AttendanceService:
         )
 
     @staticmethod
+    def calculate_today_statistics(db: Session, *, active_employee_ids: list[str], today: date) -> dict[str, int | float]:
+        active_count = len(active_employee_ids)
+        if not active_employee_ids:
+            return {
+                "present": 0,
+                "late": 0,
+                "half_day": 0,
+                "absent": 0,
+                "leave": 0,
+                "attended": 0,
+                "attendance_percentage": 0.0,
+            }
+
+        logs = db.execute(
+            select(AttendanceLog).where(
+                AttendanceLog.employee_id.in_(active_employee_ids),
+                AttendanceLog.attendance_date == today,
+            )
+        ).scalars().all()
+        latest_logs: dict[str, AttendanceLog] = {}
+        for log in logs:
+            employee_id = str(log.employee_id)
+            existing_log = latest_logs.get(employee_id)
+            if existing_log is None or (log.updated_at, log.created_at) >= (existing_log.updated_at, existing_log.created_at):
+                latest_logs[employee_id] = log
+
+        approved_today_leaves = db.execute(
+            select(LeaveRequest).where(
+                LeaveRequest.employee_id.in_(active_employee_ids),
+                LeaveRequest.status == LeaveRequestStatus.APPROVED.value,
+                LeaveRequest.start_date <= today,
+                LeaveRequest.end_date >= today,
+            )
+        ).scalars().all()
+        leave_employee_ids = {str(item.employee_id) for item in approved_today_leaves}
+        thresholds = AttendanceService._thresholds(db)
+
+        present_count = 0
+        late_count = 0
+        half_day_count = 0
+        for log in latest_logs.values():
+            employee_id = str(log.employee_id)
+            status_value = log.status
+            if log.check_in_at:
+                status_value = AttendanceService._status_after_check_in(log.check_in_at, thresholds)
+            if status_value == AttendanceStatus.LEAVE.value:
+                leave_employee_ids.add(employee_id)
+                continue
+            if employee_id in leave_employee_ids:
+                continue
+            if status_value == AttendanceStatus.PRESENT.value and log.is_late:
+                late_count += 1
+            elif status_value == AttendanceStatus.PRESENT.value:
+                present_count += 1
+            elif status_value == AttendanceStatus.HALF_DAY.value:
+                half_day_count += 1
+
+        leave_count = len(leave_employee_ids)
+        absent_count = max(active_count - present_count - leave_count - late_count, 0)
+        attended_count = present_count + late_count + half_day_count
+        attendance_percentage = round((attended_count / active_count) * 100, 1) if active_count else 0.0
+
+        return {
+            "present": present_count,
+            "late": late_count,
+            "half_day": half_day_count,
+            "absent": absent_count,
+            "leave": leave_count,
+            "attended": attended_count,
+            "attendance_percentage": attendance_percentage,
+        }
+
+    @staticmethod
+    def get_today_statistics(db: Session, auth: AuthContext) -> dict[str, object]:
+        scope_ids = AttendanceService._attendance_scope(db, auth)
+        employee_stmt = AttendanceService._employee_query()
+        if scope_ids is not None:
+            if not scope_ids:
+                return {
+                    "today": date.today(),
+                    "counts": AttendanceService.calculate_today_statistics(db, active_employee_ids=[], today=date.today()),
+                }
+            employee_stmt = employee_stmt.where(Employee.id.in_(scope_ids))
+
+        employees = db.execute(employee_stmt).scalars().all()
+        active_employee_ids = [str(employee.id) for employee in employees]
+        today = date.today()
+        return {
+            "today": today,
+            "counts": AttendanceService.calculate_today_statistics(db, active_employee_ids=active_employee_ids, today=today),
+        }
+
+    @staticmethod
     def get_meta(db: Session, auth: AuthContext) -> dict[str, object]:
         scope_ids = AttendanceService._attendance_scope(db, auth)
         stmt = AttendanceService._employee_query()
@@ -460,7 +553,7 @@ class AttendanceService:
                     status_override=status_value,
                     sessions=[AttendanceService._serialize_session(item) for item in logs],
                 ),
-                "can_check_in": can_check_in_by_permission and open_log is None,
+                "can_check_in": can_check_in_by_permission and latest_log is None,
                 "can_check_out": can_check_out_by_permission and open_log is not None,
             }
 
@@ -486,7 +579,7 @@ class AttendanceService:
                 status_override=status_value,
                 sessions=[AttendanceService._serialize_session(item) for item in logs],
             ),
-            "can_check_in": can_check_in_by_permission and leave_request is None and open_log is None,
+            "can_check_in": can_check_in_by_permission and leave_request is None and latest_log is None,
             "can_check_out": can_check_out_by_permission and leave_request is None and open_log is not None,
         }
 
@@ -506,6 +599,16 @@ class AttendanceService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="You are already checked in. Please check out first.",
+            )
+        latest_log = (
+            AttendanceService._today_log_for_employee(db, employee_id=str(employee.id), today=today)
+            if employee
+            else AttendanceService._today_log_for_user(db, user_id=str(auth.user.id), today=today)
+        )
+        if latest_log is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Attendance already exists for today.",
             )
 
         payload = payload or {}
@@ -802,18 +905,20 @@ class AttendanceService:
             "late_come": (AttendanceStatus.PRESENT.value, 0, True),
             "half_day": (AttendanceStatus.HALF_DAY.value, 0, False),
             "absent": (AttendanceStatus.ABSENT.value, 0, False),
+            "leave": (AttendanceStatus.LEAVE.value, 0, False),
         }
         if selected_status not in status_map:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid attendance status")
 
         status_value, work_minutes, is_late = status_map[selected_status]
         work_seconds = work_minutes * 60
-        log = db.execute(
+        logs = db.execute(
             select(AttendanceLog).where(
                 AttendanceLog.employee_id == employee_id,
                 AttendanceLog.attendance_date == attendance_date,
             ).order_by(AttendanceLog.updated_at.desc(), AttendanceLog.created_at.desc())
-        ).scalars().first()
+        ).scalars().all()
+        log = logs[0] if logs else None
         old_data = jsonable_encoder(
             AttendanceService._serialize_item(employee=employee, attendance_date=attendance_date, log=log)
             if log
@@ -843,7 +948,10 @@ class AttendanceService:
             log.corrected_by_user_id = auth.user.id
             log.corrected_at = datetime.now(UTC)
 
-        if selected_status in {"absent", "half_day"}:
+        for duplicate_log in logs[1:]:
+            db.delete(duplicate_log)
+
+        if selected_status in {"absent", "half_day", "leave"}:
             log.check_in_at = None
             log.check_out_at = None
 

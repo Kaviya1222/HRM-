@@ -13,6 +13,7 @@ import {
   correctAttendance,
   fetchAttendance,
   fetchAttendanceMeta,
+  fetchTodayAttendanceStats,
   updateManualAttendance,
 } from "../../api/attendanceApi";
 import useAuth from "../../hooks/useAuth";
@@ -21,9 +22,12 @@ const EMPLOYEE_DIRECTORY_UPDATED_EVENT = "hrm:employees-updated";
 const EMPLOYEE_DIRECTORY_UPDATED_AT_KEY = "hrm:employees-updated-at";
 const ATTENDANCE_UPDATED_EVENT = "hrm:attendance-updated";
 const ATTENDANCE_UPDATED_AT_KEY = "hrm:attendance-updated-at";
+const LEAVE_UPDATED_EVENT = "hrm:leave-updated";
+const LEAVE_UPDATED_AT_KEY = "hrm:leave-updated-at";
 const MANUAL_ATTENDANCE_OPTIONS = [
   { value: "present", label: "Present" },
   { value: "absent", label: "Absent" },
+  { value: "leave", label: "Leave" },
   { value: "late_come", label: "Late Entry" },
   { value: "half_day", label: "Half Day" },
 ];
@@ -344,6 +348,9 @@ function getManualAttendanceValue(record, dateKey, defaultPresentDateKey) {
   if (record.status === "half_day") {
     return "half_day";
   }
+  if (record.status === "leave") {
+    return "leave";
+  }
   return "absent";
 }
 
@@ -529,6 +536,13 @@ function AttendancePage() {
   const [meta, setMeta] = useState({ employees: [], thresholds: {} });
   const [records, setRecords] = useState([]);
   const [todaySummaryRecords, setTodaySummaryRecords] = useState([]);
+  const [todayStats, setTodayStats] = useState({
+    present: 0,
+    absent: 0,
+    leave: 0,
+    late: 0,
+    half_day: 0,
+  });
   const [searchQuery, setSearchQuery] = useState("");
   const [dateFilterMode, setDateFilterMode] = useState("current_week");
   const [filters, setFilters] = useState(() => {
@@ -666,18 +680,12 @@ function AttendancePage() {
   }, [dateColumns]);
 
   const summaryCards = useMemo(() => {
-    const summaryDateKey = targetDateColumn?.key || formatInputDate(new Date());
-    const summaryRecords = records.filter(
-      (item) => item.attendance_date && formatInputDate(item.attendance_date) === summaryDateKey,
-    );
-    const employeeCount = meta.employees.length || summaryRecords.length;
-    const lateCount = summaryRecords.filter((item) => item.status === "present" && item.is_late).length;
-    const halfDayCount = summaryRecords.filter((item) => item.status === "half_day").length;
-    const absentCount = summaryRecords.filter((item) => item.status === "absent").length;
-    const presentRecordCount = summaryRecords.filter((item) => item.status === "present" && !item.is_late).length;
-    const nonPresentCount = lateCount + halfDayCount + absentCount;
-    const presentCount = Math.max(employeeCount - nonPresentCount, presentRecordCount);
-    const unmarkedCount = 0;
+    const presentCount = Number(todayStats.present || 0);
+    const lateCount = Number(todayStats.late || 0);
+    const leaveCount = Number(todayStats.leave || 0);
+    const halfDayCount = Number(todayStats.half_day || 0);
+    const absentCount = Number(todayStats.absent || 0);
+    const unmarkedCount = Math.max(meta.employees.length - presentCount - lateCount - leaveCount - absentCount, 0);
 
     return [
       {
@@ -695,6 +703,13 @@ function AttendancePage() {
         tone: "is-late",
       },
       {
+        label: "Today Leave",
+        value: String(leaveCount).padStart(2, "0"),
+        helper: leaveCount ? "Marked leave today" : "No leave records today",
+        icon: CalendarDays,
+        tone: "is-half-day",
+      },
+      {
         label: "Half Day",
         value: String(halfDayCount).padStart(2, "0"),
         helper: halfDayCount ? "Half-day attendance" : "No half-day records today",
@@ -709,7 +724,7 @@ function AttendancePage() {
         tone: "is-absent",
       },
     ];
-  }, [meta.employees.length, records, targetDateColumn]);
+  }, [meta.employees.length, todayStats]);
 
   const attendanceRows = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -781,6 +796,9 @@ function AttendancePage() {
 
     for (const row of attendanceRows) {
       const record = row.recordsByDate[targetDateColumn.key] || null;
+      if (!record?.id) {
+        continue;
+      }
       const manualValue = getManualAttendanceValue(record, targetDateColumn.key, targetDateColumn.key);
       if (manualValue) {
         counts[manualValue] += 1;
@@ -804,7 +822,7 @@ function AttendancePage() {
 
     try {
       const todayValue = formatInputDate(new Date());
-      const [metaResponse, recordsResponse, todayRecordsResponse] = await Promise.all([
+      const [metaResponse, recordsResponse, todayRecordsResponse, todayStatsResponse] = await Promise.all([
         fetchAttendanceMeta(),
         fetchAttendance({
           start_date: activeFilters.start_date,
@@ -815,10 +833,12 @@ function AttendancePage() {
           start_date: todayValue,
           end_date: todayValue,
         }),
+        fetchTodayAttendanceStats(),
       ]);
       setMeta(metaResponse);
       setRecords(normalizeAttendanceRecords(recordsResponse.items));
       setTodaySummaryRecords(normalizeAttendanceRecords(todayRecordsResponse.items));
+      setTodayStats(todayStatsResponse.counts || {});
     } catch (error) {
       setFeedback({
         type: "error",
@@ -843,6 +863,10 @@ function AttendancePage() {
       void loadData({ silent: true });
     }
 
+    function handleLeaveUpdate() {
+      void loadData({ silent: true });
+    }
+
     function handleStorage(event) {
       if (event.key === EMPLOYEE_DIRECTORY_UPDATED_AT_KEY) {
         void loadData({ silent: true });
@@ -850,15 +874,20 @@ function AttendancePage() {
       if (event.key === ATTENDANCE_UPDATED_AT_KEY) {
         void loadData({ silent: true });
       }
+      if (event.key === LEAVE_UPDATED_AT_KEY) {
+        void loadData({ silent: true });
+      }
     }
 
     window.addEventListener(EMPLOYEE_DIRECTORY_UPDATED_EVENT, handleEmployeeDirectoryUpdate);
     window.addEventListener(ATTENDANCE_UPDATED_EVENT, handleAttendanceUpdate);
+    window.addEventListener(LEAVE_UPDATED_EVENT, handleLeaveUpdate);
     window.addEventListener("storage", handleStorage);
 
     return () => {
       window.removeEventListener(EMPLOYEE_DIRECTORY_UPDATED_EVENT, handleEmployeeDirectoryUpdate);
       window.removeEventListener(ATTENDANCE_UPDATED_EVENT, handleAttendanceUpdate);
+      window.removeEventListener(LEAVE_UPDATED_EVENT, handleLeaveUpdate);
       window.removeEventListener("storage", handleStorage);
     };
   }, []);

@@ -622,10 +622,6 @@ function CalendarPage() {
                 <span className="calendar-hero-selected-date">{formatSelectedDateLabel(selectedDate)}</span>
               </button>
             )}
-
-            <p className="calendar-hero-subtitle">
-              A polished month view for planning HR activities, reviewing important dates, and keeping teams aligned.
-            </p>
           </div>
 
           <div className="calendar-hero-visual" aria-hidden="true">

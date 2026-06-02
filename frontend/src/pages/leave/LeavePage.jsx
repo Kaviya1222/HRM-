@@ -380,13 +380,14 @@ function LeavePage() {
           <table className="employee-table">
             <thead>
               <tr>
-                <th>Employee</th>
+                <th>Employee Name</th>
+                <th>Employee ID</th>
                 <th>Leave Type</th>
-                <th>Start</th>
-                <th>End</th>
+                <th>From Date</th>
+                <th>To Date</th>
                 <th>Total Days</th>
                 <th>Status</th>
-                <th>Remarks</th>
+                <th>Reason</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -396,9 +397,9 @@ function LeavePage() {
                   <td>
                     <div className="employee-primary-cell">
                       <strong>{request.employee_name || "--"}</strong>
-                      <span>{request.employee_code || "--"}</span>
                     </div>
                   </td>
+                  <td>{request.employee_code || "--"}</td>
                   <td>{request.leave_type_name}</td>
                   <td>{formatDate(request.start_date)}</td>
                   <td>{formatDate(request.end_date)}</td>
@@ -408,7 +409,7 @@ function LeavePage() {
                       {request.status}
                     </span>
                   </td>
-                  <td>{request.remarks || "--"}</td>
+                  <td>{request.reason || "--"}</td>
                   <td>
                     {canApprove && request.status === "pending" ? (
                       <div className="employee-row-actions">

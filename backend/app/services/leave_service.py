@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import AuthContext
-from app.models.attendance import AttendanceDailySummary
+from app.models.attendance import AttendanceDailySummary, AttendanceLog
 from app.models.auth import Role, User
 from app.models.employee import Employee
 from app.models.enums import AttendanceStatus, EmployeeStatus, LeaveRequestStatus
@@ -375,6 +375,42 @@ class LeaveService:
             leave_request.rejected_at = None
             leave_request.remarks = normalized_remarks
             for leave_day in LeaveService._date_range(leave_request.start_date, leave_request.end_date):
+                logs = db.execute(
+                    select(AttendanceLog)
+                    .where(
+                        AttendanceLog.employee_id == leave_request.employee_id,
+                        AttendanceLog.attendance_date == leave_day,
+                    )
+                    .order_by(AttendanceLog.updated_at.desc(), AttendanceLog.created_at.desc())
+                ).scalars().all()
+                attendance_log = logs[0] if logs else None
+                if attendance_log is None:
+                    attendance_log = AttendanceLog(
+                        employee_id=leave_request.employee_id,
+                        attendance_date=leave_day,
+                        status=AttendanceStatus.LEAVE.value,
+                        work_minutes=0,
+                        work_seconds=0,
+                        is_late=False,
+                        source="leave",
+                        corrected_by_user_id=auth.user.id,
+                        corrected_at=acted_at,
+                    )
+                    db.add(attendance_log)
+                else:
+                    attendance_log.status = AttendanceStatus.LEAVE.value
+                    attendance_log.check_in_at = None
+                    attendance_log.check_out_at = None
+                    attendance_log.work_minutes = 0
+                    attendance_log.work_seconds = 0
+                    attendance_log.is_late = False
+                    attendance_log.source = "leave"
+                    attendance_log.corrected_by_user_id = auth.user.id
+                    attendance_log.corrected_at = acted_at
+
+                for duplicate_log in logs[1:]:
+                    db.delete(duplicate_log)
+
                 summary = db.execute(
                     select(AttendanceDailySummary).where(
                         AttendanceDailySummary.employee_id == leave_request.employee_id,

@@ -10,6 +10,11 @@ export async function fetchTodayAttendance() {
   return response.data;
 }
 
+export async function fetchTodayAttendanceStats() {
+  const response = await apiClient.get("/attendance/today-stats");
+  return response.data;
+}
+
 export async function fetchAttendance(params = {}) {
   const response = await apiClient.get("/attendance", { params });
   return response.data;

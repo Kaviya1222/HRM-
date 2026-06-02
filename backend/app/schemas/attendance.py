@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 class ManualAttendanceRequest(BaseModel):
     employee_id: UUID
     attendance_date: date
-    status: Literal["present", "absent", "late_come", "half_day"]
+    status: Literal["present", "absent", "leave", "late_come", "half_day"]
 
 
 class AttendanceCheckInRequest(BaseModel):

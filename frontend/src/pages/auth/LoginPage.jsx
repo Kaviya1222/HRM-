@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import {
   AlertCircle,
   ArrowRight,
@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { changeFirstLoginPassword, forgotPassword } from "../../api/authApi";
+import { changeFirstLoginPassword } from "../../api/authApi";
 import useAuth from "../../hooks/useAuth";
 import useBranding from "../../hooks/useBranding";
 
@@ -193,22 +193,6 @@ function LoginPage() {
       setToast({ type: "error", message: resolveErrorMessage(err) });
     } finally {
       setIsSubmitting(false);
-    }
-  }
-
-  async function handleForgotPassword(e) {
-    e.preventDefault();
-    if (!formState.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formState.email.trim())) {
-      setFieldErrors((current) => ({ ...current, email: "Enter a valid email before requesting a reset." }));
-      setToast({ type: "error", message: "Invalid Email" });
-      return;
-    }
-
-    try {
-      await forgotPassword(formState.email.trim().toLowerCase());
-      setToast({ type: "success", message: "Password reset instructions sent if the email exists." });
-    } catch (err) {
-      setToast({ type: "error", message: resolveErrorMessage(err) });
     }
   }
 
@@ -404,7 +388,6 @@ function LoginPage() {
                   />
                   <span>Remember Me</span>
                 </label>
-                <Link to="/login" onClick={handleForgotPassword}>Forgot Password?</Link>
               </div>
 
               <button id="login-submit-btn" className="lf-submit" type="submit" disabled={isSubmitting}>

@@ -29,6 +29,14 @@ def get_today_attendance(
     return AttendanceService.get_today_overview(db, auth)
 
 
+@router.get("/today-stats")
+def get_today_attendance_stats(
+    auth: AuthContext = Depends(require_any_permissions("attendance.view.own", "attendance.view.team", "attendance.view.all")),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return AttendanceService.get_today_statistics(db, auth)
+
+
 @router.post("/check-in")
 def check_in(
     payload: AttendanceCheckInRequest | None = None,

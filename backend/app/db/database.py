@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from contextlib import suppress
-
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import URL, make_url
 
 
@@ -56,20 +54,81 @@ def ensure_attendance_runtime_schema(engine) -> None:
         if "work_seconds" not in summary_columns:
             connection.execute(text("ALTER TABLE attendance_daily_summary ADD COLUMN work_seconds INT NOT NULL DEFAULT 0 AFTER work_minutes"))
 
+        summary_rows = connection.execute(
+            text(
+                "SELECT id, employee_id, summary_date, created_at, updated_at "
+                "FROM attendance_daily_summary "
+                "ORDER BY summary_date, employee_id, updated_at, created_at, id"
+            )
+        ).mappings().all()
+        summary_groups: dict[tuple[object, object], list[dict[str, object]]] = {}
+        for row in summary_rows:
+            summary_groups.setdefault((row["employee_id"], row["summary_date"]), []).append(dict(row))
+
+        summary_delete_ids: list[str] = []
+        for group_rows in summary_groups.values():
+            if len(group_rows) <= 1:
+                continue
+            keep = max(group_rows, key=lambda item: (item["updated_at"], item["created_at"], item["id"]))
+            summary_delete_ids.extend(str(item["id"]) for item in group_rows if item["id"] != keep["id"])
+
+        for index in range(0, len(summary_delete_ids), 500):
+            chunk = summary_delete_ids[index:index + 500]
+            connection.execute(
+                text("DELETE FROM attendance_daily_summary WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)),
+                {"ids": chunk},
+            )
+
         employee_column = connection.execute(text("SHOW COLUMNS FROM attendance_logs LIKE 'employee_id'")).mappings().first()
         if employee_column and employee_column.get("Null") == "NO":
             connection.execute(text("ALTER TABLE attendance_logs MODIFY employee_id CHAR(32) NULL"))
+
+        rows = connection.execute(
+            text(
+                "SELECT id, employee_id, user_id, attendance_date, created_at, updated_at "
+                "FROM attendance_logs "
+                "ORDER BY attendance_date, employee_id, user_id, updated_at, created_at, id"
+            )
+        ).mappings().all()
+        grouped: dict[tuple[str, object, object], list[dict[str, object]]] = {}
+        for row in rows:
+            if row["employee_id"] is not None:
+                key = ("employee", row["employee_id"], row["attendance_date"])
+            elif row["user_id"] is not None:
+                key = ("user", row["user_id"], row["attendance_date"])
+            else:
+                continue
+            grouped.setdefault(key, []).append(dict(row))
+
+        delete_ids: list[str] = []
+        for group_rows in grouped.values():
+            if len(group_rows) <= 1:
+                continue
+            keep = max(group_rows, key=lambda item: (item["updated_at"], item["created_at"], item["id"]))
+            delete_ids.extend(str(item["id"]) for item in group_rows if item["id"] != keep["id"])
+
+        for index in range(0, len(delete_ids), 500):
+            chunk = delete_ids[index:index + 500]
+            connection.execute(
+                text("DELETE FROM attendance_logs WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)),
+                {"ids": chunk},
+            )
 
         indexes = {
             row["Key_name"]
             for row in connection.execute(text("SHOW INDEX FROM attendance_logs")).mappings()
         }
-        if "uq_attendance_logs_employee_date" in indexes:
-            with suppress(Exception):
-                connection.execute(text("ALTER TABLE attendance_logs DROP INDEX uq_attendance_logs_employee_date"))
-        if "uq_attendance_logs_user_date" in indexes:
-            with suppress(Exception):
-                connection.execute(text("ALTER TABLE attendance_logs DROP INDEX uq_attendance_logs_user_date"))
+        if "uq_attendance_logs_employee_date" not in indexes:
+            connection.execute(text("CREATE UNIQUE INDEX uq_attendance_logs_employee_date ON attendance_logs (employee_id, attendance_date)"))
+        if "uq_attendance_logs_user_date" not in indexes:
+            connection.execute(text("CREATE UNIQUE INDEX uq_attendance_logs_user_date ON attendance_logs (user_id, attendance_date)"))
+
+        summary_indexes = {
+            row["Key_name"]
+            for row in connection.execute(text("SHOW INDEX FROM attendance_daily_summary")).mappings()
+        }
+        if "uq_attendance_daily_summary_employee_date" not in summary_indexes:
+            connection.execute(text("CREATE UNIQUE INDEX uq_attendance_daily_summary_employee_date ON attendance_daily_summary (employee_id, summary_date)"))
 
 
 def ensure_leave_runtime_schema(engine) -> None:
