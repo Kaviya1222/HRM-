@@ -17,11 +17,11 @@ const USER_COLUMNS = `
 `;
 
 export async function findUserByEmail(email) {
-  const [rows] = await getPool().execute(
+  const { rows } = await getPool().query(
     `SELECT ${USER_COLUMNS}
      FROM users u
      LEFT JOIN roles r ON r.id = u.role_id
-     WHERE u.email = ?
+     WHERE u.email = $1
      LIMIT 1`,
     [email],
   );
@@ -29,11 +29,11 @@ export async function findUserByEmail(email) {
 }
 
 export async function findUserById(id) {
-  const [rows] = await getPool().execute(
+  const { rows } = await getPool().query(
     `SELECT ${USER_COLUMNS}
      FROM users u
      LEFT JOIN roles r ON r.id = u.role_id
-     WHERE u.id = ?
+     WHERE u.id = $1
      LIMIT 1`,
     [id],
   );
@@ -41,12 +41,12 @@ export async function findUserById(id) {
 }
 
 export async function updateUserPassword(userId, passwordHash) {
-  await getPool().execute("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, userId]);
+  await getPool().query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, userId]);
 }
 
 export async function completeFirstLoginPasswordChange(userId, passwordHash) {
-  await getPool().execute(
-    "UPDATE users SET password_hash = ?, is_first_login = FALSE WHERE id = ?",
+  await getPool().query(
+    "UPDATE users SET password_hash = $1, is_first_login = FALSE WHERE id = $2",
     [passwordHash, userId],
   );
 }

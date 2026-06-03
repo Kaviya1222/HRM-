@@ -4,7 +4,7 @@ Production-oriented Human Resource Management system built with:
 
 - Frontend: React.js
 - Backend: FastAPI + SQLAlchemy + Alembic
-- Database: PostgreSQL
+- Database: Neon PostgreSQL
 - Windows client tracker: Python background agent
 
 Current implementation focus:
@@ -31,19 +31,15 @@ Prerequisites:
 
 - Python 3.11
 - Node.js 20 or newer
-- MySQL 8 or compatible local MySQL server
-
-Run MySQL locally. The backend creates the `hrm_db` database automatically when it connects with the configured local credentials:
-
-```powershell
-mysql -u root -proot
-```
+- Neon PostgreSQL database URL
 
 Set up environment values:
 
 ```powershell
 Copy-Item .env.example .env
 ```
+
+Set `DATABASE_URL` in `.env` to your Neon PostgreSQL connection string. Neon URLs should include SSL, for example `...?sslmode=require`.
 
 Install and run the backend:
 
@@ -69,7 +65,7 @@ Services:
 - frontend: `http://localhost:5173`
 - backend: `http://localhost:8000`
 - API health check: `http://localhost:8000/health`
-- mysql: `localhost:3306`
+- database: Neon PostgreSQL via `DATABASE_URL`
 
 The backend reads environment values from the repository root `.env`. The frontend uses `VITE_API_BASE_URL` from the same file value; keep it set to `http://localhost:8000/api/v1` for local development.
 

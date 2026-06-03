@@ -17,7 +17,7 @@
     "express-session": "^1.18.1",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.11.5"
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"

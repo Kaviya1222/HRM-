@@ -15,8 +15,8 @@ function addDays(days) {
   return date;
 }
 
-function formatDateForMySQL(date) {
-  return date.toISOString().slice(0, 19).replace("T", " ");
+function formatDateForPostgres(date) {
+  return date.toISOString();
 }
 
 function serializeUser(user) {
@@ -105,11 +105,11 @@ export async function login(req, res, next) {
       refreshTokenHash: hashToken(temporaryRefreshToken),
       userAgent: req.headers["user-agent"],
       ipAddress: req.ip,
-      expiresAt: formatDateForMySQL(addDays(7)),
+      expiresAt: formatDateForPostgres(addDays(7)),
     });
 
     const response = buildAuthResponse(user, sessionId);
-    await rotateSessionRefreshToken(sessionId, hashToken(response.refresh_token), formatDateForMySQL(addDays(7)));
+    await rotateSessionRefreshToken(sessionId, hashToken(response.refresh_token), formatDateForPostgres(addDays(7)));
     req.session.userId = user.id;
     req.session.role = user.role;
 
@@ -186,7 +186,7 @@ export async function refresh(req, res, next) {
     }
 
     const response = buildAuthResponse(user, session.id);
-    await rotateSessionRefreshToken(session.id, hashToken(response.refresh_token), formatDateForMySQL(addDays(7)));
+    await rotateSessionRefreshToken(session.id, hashToken(response.refresh_token), formatDateForPostgres(addDays(7)));
     return res.status(200).json(response);
   } catch (error) {
     return res.status(401).json({ message: "Invalid refresh token" });

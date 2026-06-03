@@ -32,11 +32,11 @@ def upgrade() -> None:
     if {"employees", "users"}.issubset(table_names):
         bind.execute(
             sa.text(
-                "UPDATE payroll_transactions pt "
-                "LEFT JOIN employees e ON e.id = pt.employee_id "
-                "LEFT JOIN users u ON u.id = e.user_id "
-                "SET pt.employee_name = COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''), e.employee_code) "
-                "WHERE pt.employee_id IS NOT NULL AND pt.employee_name IS NULL"
+                "UPDATE payroll_transactions AS pt "
+                "SET employee_name = COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), ''), e.employee_code) "
+                "FROM employees AS e "
+                "LEFT JOIN users AS u ON u.id = e.user_id "
+                "WHERE e.id = pt.employee_id AND pt.employee_id IS NOT NULL AND pt.employee_name IS NULL"
             )
         )
 

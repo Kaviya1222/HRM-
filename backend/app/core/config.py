@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-this-secret-in-production"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
-    database_url: str = "mysql+pymysql://root:root@localhost:3306/hrm_db?charset=utf8mb4"
+    database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/hrm_db"
     cors_origins: str = "http://localhost:5173,http://localhost:8080,http://127.0.0.1:8080"
     auto_bootstrap: bool = True
     seed_demo_data: bool = True

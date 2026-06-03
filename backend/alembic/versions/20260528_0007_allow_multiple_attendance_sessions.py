@@ -29,14 +29,10 @@ def upgrade() -> None:
         if constraint_name in unique_names:
             op.drop_constraint(constraint_name, "attendance_logs", type_="unique")
 
-    if bind.dialect.name.startswith("mysql"):
-        indexes = {
-            row["Key_name"]
-            for row in bind.execute(sa.text("SHOW INDEX FROM attendance_logs")).mappings()
-        }
-        for index_name in ("uq_attendance_logs_user_date", "uq_attendance_logs_employee_date"):
-            if index_name in indexes:
-                op.drop_index(index_name, table_name="attendance_logs")
+    indexes = {index["name"] for index in inspector.get_indexes("attendance_logs")}
+    for index_name in ("uq_attendance_logs_user_date", "uq_attendance_logs_employee_date"):
+        if index_name in indexes:
+            op.drop_index(index_name, table_name="attendance_logs")
 
 
 def downgrade() -> None:

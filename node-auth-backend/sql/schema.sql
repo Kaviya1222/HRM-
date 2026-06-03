@@ -1,28 +1,49 @@
-CREATE DATABASE IF NOT EXISTS hrm_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-USE hrm_db;
+CREATE TABLE IF NOT EXISTS roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code VARCHAR(50) UNIQUE NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  hierarchy_rank INTEGER NOT NULL DEFAULT 100,
+  description TEXT NULL,
+  is_system BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS users (
-  id INT AUTO_INCREMENT PRIMARY KEY,
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   employee_id VARCHAR(50) UNIQUE,
   full_name VARCHAR(100),
+  first_name VARCHAR(100),
+  last_name VARCHAR(100),
   email VARCHAR(100) UNIQUE,
   password_hash VARCHAR(255),
-  role ENUM('Admin','HR','Employee') NOT NULL DEFAULT 'Employee',
-  status ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
+  role_id UUID REFERENCES roles(id),
+  role VARCHAR(30) DEFAULT 'Employee',
+  status VARCHAR(30) DEFAULT 'Active',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
   is_first_login BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  last_login_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS user_sessions (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  user_id INT NOT NULL,
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   refresh_token_hash VARCHAR(255) NOT NULL,
+  access_jti VARCHAR(64) NOT NULL DEFAULT gen_random_uuid()::text,
+  refresh_jti VARCHAR(64) NOT NULL DEFAULT gen_random_uuid()::text,
+  device_name VARCHAR(120),
+  device_type VARCHAR(60),
   user_agent VARCHAR(255),
   ip_address VARCHAR(64),
-  expires_at DATETIME NOT NULL,
-  revoked_at DATETIME NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_user_sessions_user_id (user_id),
-  CONSTRAINT fk_user_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  last_activity_at TIMESTAMPTZ NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);

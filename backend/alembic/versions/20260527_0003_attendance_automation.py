@@ -106,7 +106,7 @@ def upgrade() -> None:
             sa.column("value_json", sa.JSON),
             sa.column("is_public", sa.Boolean),
         )
-        existing_keys = set(bind.execute(sa.text("SELECT `key` FROM app_settings")).scalars().all())
+        existing_keys = set(bind.execute(sa.text('SELECT "key" FROM app_settings')).scalars().all())
         rows = [{**item, "id": uuid4().hex} for item in ATTENDANCE_SETTINGS if item["key"] not in existing_keys]
         if rows:
             op.bulk_insert(app_settings, rows)
@@ -114,7 +114,7 @@ def upgrade() -> None:
         bind.execute(
             sa.text(
                 "UPDATE app_settings SET value_json = :value_json "
-                "WHERE `key` = 'attendance.workday_start'"
+                'WHERE "key" = \'attendance.workday_start\''
             ),
             {"value_json": json.dumps({"hour": 9, "minute": 30})},
         )
@@ -141,4 +141,4 @@ def downgrade() -> None:
 
     if "app_settings" in table_names:
         keys = [item["key"] for item in ATTENDANCE_SETTINGS]
-        bind.execute(sa.text("DELETE FROM app_settings WHERE `key` IN :keys").bindparams(sa.bindparam("keys", expanding=True)), {"keys": keys})
+        bind.execute(sa.text('DELETE FROM app_settings WHERE "key" IN :keys').bindparams(sa.bindparam("keys", expanding=True)), {"keys": keys})

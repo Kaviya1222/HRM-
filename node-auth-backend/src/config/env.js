@@ -6,12 +6,7 @@ export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 3001),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
-  db: {
-    host: process.env.DB_HOST || "localhost",
-    user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "root",
-    database: process.env.DB_NAME || "hrm_db",
-  },
+  databaseUrl: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/hrm_db",
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET || "hrm_access_secret_change_me",
     refreshSecret: process.env.JWT_REFRESH_SECRET || "hrm_refresh_secret_change_me",

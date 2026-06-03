@@ -37,8 +37,8 @@ def upgrade() -> None:
         sa.text(
             """
             UPDATE payroll_transactions
-            SET payroll_month = MONTH(transaction_date),
-                payroll_year = YEAR(transaction_date)
+            SET payroll_month = EXTRACT(MONTH FROM transaction_date),
+                payroll_year = EXTRACT(YEAR FROM transaction_date)
             WHERE transaction_type = 'salary'
               AND employee_id IS NOT NULL
               AND transaction_date IS NOT NULL
